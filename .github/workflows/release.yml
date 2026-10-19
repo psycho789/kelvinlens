@@ -1,0 +1,137 @@
+name: Release
+
+# Runs after CI passes on main. If the app version has no release yet, builds installers for
+# Linux, macOS and Windows and publishes them as a GitHub release. To release: bump the version
+# with scripts/bump-version.sh, commit and push.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      release: ${{ steps.version.outputs.release }}
+      sha: ${{ steps.version.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Decide whether to release
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(jq -r .version src-tauri/tauri.conf.json)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          if gh release view "v$version" >/dev/null 2>&1; then
+            echo "v$version is already released; nothing to do."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create draft release
+        if: steps.version.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=${{ steps.version.outputs.version }}
+          sed "s/__VERSION__/$version/g" .github/release-notes.md > notes.md
+          gh release create "v$version" --draft --title "Kelvinlens $version" \
+            --notes-file notes.md --target "${{ steps.version.outputs.sha }}"
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libssl-dev librsvg2-dev patchelf file xdg-utils
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build installers and upload to the release
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseDraft: true
+          args: --target ${{ matrix.target }}
+          retryAttempts: 1
+
+      - name: Self-test the release binary
+        if: matrix.target != 'x86_64-apple-darwin'
+        shell: bash
+        run: |
+          scripts/fetch-testdata.sh
+          bin=target/${{ matrix.target }}/release/kelvinlens
+          [ -f "$bin.exe" ] && bin="$bin.exe"
+          out=$("$bin" --self-test testdata/FLIR_E40.jpg)
+          echo "$out"
+          [[ "$out" == *"160x120 centre=20.92C"* ]]
+
+  publish:
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "v${{ needs.plan.outputs.version }}" --repo "$GITHUB_REPOSITORY" --draft=false --latest

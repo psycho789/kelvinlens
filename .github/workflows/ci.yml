@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libssl-dev librsvg2-dev patchelf file
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Check versions agree
+        shell: bash
+        run: scripts/check-version.sh
+
+      - name: Install UI dependencies
+        run: npm ci
+
+      - name: Type-check and build UI
+        run: npm run build
+
+      - name: Fetch sample thermograms
+        shell: bash
+        run: scripts/fetch-testdata.sh
+
+      - name: Rust formatting
+        if: runner.os == 'Linux'
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        if: runner.os == 'Linux'
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Tests (unit + golden temperature tests)
+        run: cargo test --workspace
+
+      - name: Build the app (no installer)
+        run: npx tauri build --debug --no-bundle
+
+      - name: Self-test the built app
+        shell: bash
+        run: |
+          bin=target/debug/kelvinlens
+          [ -f "$bin.exe" ] && bin="$bin.exe"
+          out=$("$bin" --self-test testdata/FLIR_E40.jpg)
+          echo "$out"
+          [[ "$out" == *"160x120 centre=20.92C"* ]]

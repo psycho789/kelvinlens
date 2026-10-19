@@ -1,0 +1,23 @@
+[package]
+name = "kelvinlens"
+description = "Free thermal image viewer, analyser and report tool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "kelvinlens_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.7", features = [] }
+
+[dependencies]
+kelvinlens-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2.12", features = [] }
+tauri-plugin-dialog = "2.8"

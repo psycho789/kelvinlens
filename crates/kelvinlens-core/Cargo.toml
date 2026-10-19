@@ -1,0 +1,19 @@
+[package]
+name = "kelvinlens-core"
+description = "Thermal image model, temperature recomputation, measurements and reports for Kelvinlens"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+libblackbody.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uom = "0.38"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+typst = "0.15"
+typst-pdf = "0.15"
+typst-as-lib = "0.17"

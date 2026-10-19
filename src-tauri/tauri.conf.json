@@ -1,0 +1,58 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Kelvinlens",
+  "version": "0.1.0",
+  "identifier": "io.github.psycho789.kelvinlens",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Kelvinlens",
+        "width": 1320,
+        "height": 840,
+        "minWidth": 960,
+        "minHeight": 620,
+        "dragDropEnabled": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Utility",
+    "shortDescription": "Thermal image viewer and report tool",
+    "longDescription": "Open radiometric thermal images from FLIR, Fluke, InfiRay/Topdon and HTI cameras, correct emissivity and other parameters, measure temperatures and create PDF reports. Free, offline and open source.",
+    "publisher": "Kelvinlens contributors",
+    "copyright": "© 2026 Kelvinlens contributors. Licensed under the EUPL-1.2.",
+    "license": "EUPL-1.2",
+    "licenseFile": "../LICENSE",
+    "homepage": "https://github.com/psycho789/kelvinlens",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "signingIdentity": "-",
+      "minimumSystemVersion": "10.15"
+    },
+    "windows": {
+      "nsis": { "installMode": "currentUser" }
+    },
+    "linux": {
+      "deb": { "section": "graphics" },
+      "rpm": { "release": "1" }
+    }
+  }
+}
