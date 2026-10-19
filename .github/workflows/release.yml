@@ -40,15 +40,17 @@ jobs:
           version=$(jq -r .version src-tauri/tauri.conf.json)
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          if gh release view "v$version" >/dev/null 2>&1; then
-            echo "v$version is already released; nothing to do."
-            echo "release=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "release=true" >> "$GITHUB_OUTPUT"
-          fi
+          # The list includes drafts (lookup by tag does not), so an unfinished draft is resumed.
+          state=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq "[.[] | select(.tag_name == \"v$version\")][0] | if . == null then \"none\" else (.draft | tostring) end")
+          case "$state" in
+            false) echo "v$version is already published; nothing to do."; echo "release=false" >> "$GITHUB_OUTPUT" ;;
+            true)  echo "Resuming the draft release v$version."; echo "release=true" >> "$GITHUB_OUTPUT" ;;
+            *)     echo "release=true" >> "$GITHUB_OUTPUT"; echo "create=true" >> "$GITHUB_OUTPUT" ;;
+          esac
 
       - name: Create draft release
-        if: steps.version.outputs.release == 'true'
+        if: steps.version.outputs.create == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
