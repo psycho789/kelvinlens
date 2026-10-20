@@ -7,6 +7,9 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Largest stitched canvas, in pixels (width × height); larger results are refused.
+const MAX_CANVAS_PIXELS: usize = 40_000_000;
+
 /// A stitched image: temperatures (NaN where no image covers) and each image's top-left corner.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -238,7 +241,7 @@ pub fn stitch(tiles: &[Tile], offsets: &[Option<[i64; 2]>], settings: &StitchSet
     let offsets: Vec<[i64; 2]> = placed.iter().map(|o| [o[0] - min_x, o[1] - min_y]).collect();
     let width = tiles.iter().zip(&offsets).map(|(t, o)| o[0] as usize + t.width).max().unwrap();
     let height = tiles.iter().zip(&offsets).map(|(t, o)| o[1] as usize + t.height).max().unwrap();
-    if width * height > 40_000_000 {
+    if width.saturating_mul(height) > MAX_CANVAS_PIXELS {
         return Err("The panorama would be too large; check the image order and alignment".into());
     }
 
@@ -325,6 +328,15 @@ mod tests {
         let s = stitch(&tiles, &[None, Some([45, 3])], &StitchSettings::default()).unwrap();
         assert_eq!(s.offsets, vec![[0, 0], [45, 3]]);
         assert!(s.scores[1].is_nan());
+    }
+
+    #[test]
+    fn refuses_a_canvas_over_the_pixel_limit() {
+        let flat = vec![290.0f32; 50 * 50];
+        let tiles = [Tile { kelvin: &flat, width: 50, height: 50 }, Tile { kelvin: &flat, width: 50, height: 50 }];
+        // Offset (100_000, 100_000) makes a 100_050 × 100_050 canvas, far above MAX_CANVAS_PIXELS.
+        let err = stitch(&tiles, &[None, Some([100_000, 100_000])], &StitchSettings::default()).unwrap_err();
+        assert!(err.contains("too large"), "{err}");
     }
 
     #[test]

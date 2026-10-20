@@ -4,6 +4,8 @@
 //! as colour tables (see `resample`). Mapping temperatures to palette indices lives in
 //! `render.rs`, so on-screen images, exports and reports agree pixel for pixel.
 
+use std::sync::OnceLock;
+
 use libblackbody::palettes;
 use serde::{Deserialize, Serialize};
 
@@ -17,7 +19,14 @@ pub struct Palette {
 /// Colour for pixels without a temperature (NaN).
 pub const NO_DATA: [u8; 3] = [128, 128, 128];
 
-pub fn all() -> Vec<Palette> {
+static ALL: OnceLock<Vec<Palette>> = OnceLock::new();
+
+/// The built-in palettes, built on first use.
+pub fn all() -> &'static [Palette] {
+    ALL.get_or_init(build_all)
+}
+
+fn build_all() -> Vec<Palette> {
     vec![
         from_stops("iron", "Iron", IRON),
         from_stops("rainbow", "Rainbow", RAINBOW),
@@ -33,7 +42,7 @@ pub fn all() -> Vec<Palette> {
 }
 
 pub fn by_id(id: &str) -> Option<Palette> {
-    all().into_iter().find(|p| p.id == id)
+    all().iter().find(|p| p.id == id).cloned()
 }
 
 const IRON: &[(f32, [u8; 3])] = &[
@@ -149,7 +158,7 @@ mod tests {
     #[test]
     fn every_palette_has_256_colours_and_unique_id() {
         let all = all();
-        for p in &all {
+        for p in all {
             assert_eq!(p.colors.len(), 256, "{}", p.id);
             assert_eq!(all.iter().filter(|q| q.id == p.id).count(), 1);
         }

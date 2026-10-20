@@ -147,7 +147,7 @@ impl Video {
     }
 
     /// The raw bytes of frame `i`, exactly as stored.
-    pub fn frame_bytes(&self, i: usize) -> Result<Vec<u8>> {
+    fn frame_bytes(&self, i: usize) -> Result<Vec<u8>> {
         let f = self.frames.get(i).ok_or_else(|| Error::Open(format!("there is no frame {}", i + 1)))?;
         let mut file = File::open(&self.path)?;
         let mut buf = vec![0u8; f.length];

@@ -1,17 +1,6 @@
 //! A minimal Motion-JPEG AVI writer for exporting rendered video, the format FLIR Thermal Studio
 //! exports too. Plays in VLC, Windows Media Player and browsers' video tools; frames are JPEGs.
 
-use crate::{Error, Result, export};
-
-/// Writes RGB frames (`width` × `height`, 3 bytes per pixel) as an MJPEG AVI at `fps`.
-pub fn mjpeg(frames: &[Vec<u8>], width: usize, height: usize, fps: f64, quality: u8) -> Result<Vec<u8>> {
-    if frames.is_empty() {
-        return Err(Error::Encode("no frames to write".into()));
-    }
-    let jpegs = frames.iter().map(|f| export::jpeg(f, width, height, quality)).collect::<Result<Vec<_>>>()?;
-    Ok(container(&jpegs, width, height, fps))
-}
-
 fn le32(v: u32) -> [u8; 4] {
     v.to_le_bytes()
 }
@@ -108,11 +97,13 @@ pub fn container(jpegs: &[Vec<u8>], width: usize, height: usize, fps: f64) -> Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::export;
 
     #[test]
     fn structure_and_index_point_at_frames() {
-        let frames = vec![vec![10u8; 8 * 6 * 3], vec![200u8; 8 * 6 * 3], vec![90u8; 8 * 6 * 3]];
-        let avi = mjpeg(&frames, 8, 6, 9.0, 85).unwrap();
+        let frames = [vec![10u8; 8 * 6 * 3], vec![200u8; 8 * 6 * 3], vec![90u8; 8 * 6 * 3]];
+        let jpegs: Vec<Vec<u8>> = frames.iter().map(|f| export::jpeg(f, 8, 6, 85).unwrap()).collect();
+        let avi = container(&jpegs, 8, 6, 9.0);
         assert_eq!(&avi[0..4], b"RIFF");
         assert_eq!(u32::from_le_bytes(avi[4..8].try_into().unwrap()) as usize, avi.len() - 8);
         assert_eq!(&avi[8..12], b"AVI ");
@@ -135,6 +126,5 @@ mod tests {
         let scale = u32::from_le_bytes(avi[strh + 20..strh + 24].try_into().unwrap());
         let rate = u32::from_le_bytes(avi[strh + 24..strh + 28].try_into().unwrap());
         assert_eq!(rate / scale, 9);
-        assert!(mjpeg(&[], 8, 6, 9.0, 85).is_err());
     }
 }

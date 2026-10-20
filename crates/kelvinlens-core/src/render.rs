@@ -40,7 +40,7 @@ pub struct Look {
 }
 
 /// Palette index for a temperature with linear mapping over `range`; `None` for NaN.
-pub fn linear_index(kelvin: f32, range: [f32; 2]) -> Option<u8> {
+fn linear_index(kelvin: f32, range: [f32; 2]) -> Option<u8> {
     if kelvin.is_nan() {
         return None;
     }

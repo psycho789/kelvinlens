@@ -294,10 +294,7 @@ async fn evaluate_formulas(
                     .iter()
                     .position(|m| m.label == name)
                     .or_else(|| measurements.iter().position(|m| m.label.eq_ignore_ascii_case(name)))?;
-                Some(formula::Value::Measurement {
-                    stats: stats[i].as_ref(),
-                    spot: matches!(measurements[i].shape, Shape::Spot { .. }),
-                })
+                Some(formula::Value::Measurement { stats: stats[i].as_ref() })
             },
             unit,
         ))
@@ -654,7 +651,7 @@ fn is_folder(path: String) -> bool {
 
 #[tauri::command]
 fn palettes() -> Vec<palette::Palette> {
-    palette::all()
+    palette::all().to_vec()
 }
 
 #[tauri::command]
@@ -873,7 +870,6 @@ fn self_test(path: &str) -> i32 {
     }
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let args: Vec<String> = std::env::args().collect();
     if let Some(i) = args.iter().position(|a| a == "--self-test") {

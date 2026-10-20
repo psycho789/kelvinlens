@@ -42,8 +42,8 @@ pub struct FormulaResult {
 
 /// What a label refers to.
 pub enum Value<'a> {
-    /// A measurement's statistics (`None` if it covers no temperature) and whether it is a spot.
-    Measurement { stats: Option<&'a Stats>, spot: bool },
+    /// A measurement's statistics (`None` if it covers no temperature).
+    Measurement { stats: Option<&'a Stats> },
     /// An earlier formula's result.
     Number(f64),
 }
@@ -290,11 +290,10 @@ impl<'a, F: Fn(&str) -> Option<Value<'a>>> Parser<'_, 'a, F> {
                 None => Ok(n),
                 Some(s) => Err(format!("\"{name}\" is a formula; \".{s}\" only applies to measurements")),
             },
-            Value::Measurement { stats, spot } => {
+            Value::Measurement { stats } => {
                 let s = stats.ok_or_else(|| format!("{name} has no temperature"))?;
                 let t = |k: f32| self.unit.from_kelvin(k) as f64;
                 match stat {
-                    None if spot => Ok(t(s.avg)),
                     None | Some("avg" | "mean" | "average") => Ok(t(s.avg)),
                     Some("max") => Ok(t(s.max)),
                     Some("min") => Ok(t(s.min)),
@@ -347,10 +346,10 @@ mod tests {
         evaluate(
             expr,
             |name| match name {
-                "Sp1" => Some(Value::Measurement { stats: Some(&sp1), spot: true }),
-                "Bx1" => Some(Value::Measurement { stats: Some(&bx1), spot: false }),
-                "Breaker 3" => Some(Value::Measurement { stats: Some(&br), spot: false }),
-                "Li1" => Some(Value::Measurement { stats: None, spot: false }),
+                "Sp1" => Some(Value::Measurement { stats: Some(&sp1) }),
+                "Bx1" => Some(Value::Measurement { stats: Some(&bx1) }),
+                "Breaker 3" => Some(Value::Measurement { stats: Some(&br) }),
+                "Li1" => Some(Value::Measurement { stats: None }),
                 _ => None,
             },
             unit,
@@ -416,7 +415,7 @@ mod tests {
         ];
         let out = evaluate_all(
             &formulas,
-            |n| (n == "Sp1").then_some(Value::Measurement { stats: Some(&sp1), spot: true }),
+            |n| (n == "Sp1").then_some(Value::Measurement { stats: Some(&sp1) }),
             Unit::Celsius,
         );
         assert!((out[0].value.unwrap() - 7.0).abs() < 1e-4);

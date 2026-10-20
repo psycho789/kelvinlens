@@ -6,7 +6,7 @@
 //!   optional visible picture. Temperatures are `u16` in 1/64 K, sensor orientation.
 //! - APP5: emissivity, reflected and environment temperature, distance, humidity, and which
 //!   readings (centre, max, min) the camera showed.
-//! - APP9: sensor name, serial number and firmware.
+//! - APP9: sensor name and serial number.
 //!
 //! The file does not say how the saved picture is rotated relative to the sensor, so the
 //! orientation is found by matching the temperatures against the picture itself.
@@ -24,14 +24,11 @@ pub struct InfiRayJpeg {
     pub model: Option<String>,
     pub date_time: Option<String>,
     pub serial_number: Option<String>,
-    pub firmware: Option<String>,
     pub focal_length: Option<f32>,
     /// The camera showed its centre reading on the picture.
     pub show_centre: bool,
     /// The app's palette number (3 is iron, per the P2 Pro protocol).
     pub palette: Option<u16>,
-    /// How the sensor data was turned to match the picture.
-    pub orientation: Orientation,
 }
 
 /// A transform from sensor pixels to picture pixels.
@@ -134,7 +131,7 @@ pub fn decode(bytes: &[u8]) -> Option<InfiRayJpeg> {
 
     // ExifTool joins every APP3 segment that follows the header.
     let data: Vec<u8> = segs.iter().filter(|(m, _)| *m == 0xe3).flat_map(|(_, d)| d.iter().copied()).collect();
-    let temps = data.get(ir_size..ir_size + temp_size)?;
+    let temps = data.get(ir_size..ir_size.checked_add(temp_size)?)?;
     let count = temp_size / 2;
     if temp_width == 0 || count == 0 || !count.is_multiple_of(temp_width) {
         return None;
@@ -178,11 +175,9 @@ pub fn decode(bytes: &[u8]) -> Option<InfiRayJpeg> {
         model,
         date_time,
         serial_number: sensor_info.and_then(|d| text(d, 0x0c0, 32)),
-        firmware: sensor_info.and_then(|d| text(d, 0x100, 12)),
         focal_length: sensor_info.and_then(|d| f32_le(d, 0x144)).filter(|f| *f > 0.0),
         show_centre,
         palette: u16_le(header, 0x11),
-        orientation,
     })
 }
 
@@ -325,6 +320,32 @@ mod tests {
             }
         }
         assert_eq!(best_orientation(&sensor, sw, sh, &luma, lw, lh), Orientation::Rotate90);
+    }
+
+    /// A JPEG with an IJPEG header (APP2) and 16 bytes of APP3 data.
+    fn ijpeg_with_sizes(ir_size: u64, temp_size: u64) -> Vec<u8> {
+        let mut header = [0u8; 0x50];
+        header[4..10].copy_from_slice(b"IJPEG\0");
+        header[0x20..0x28].copy_from_slice(&ir_size.to_le_bytes());
+        header[0x30..0x38].copy_from_slice(&temp_size.to_le_bytes());
+        header[0x3a..0x3c].copy_from_slice(&4u16.to_le_bytes());
+        let mut out = vec![0xff, 0xd8];
+        for (marker, payload) in [(0xe2u8, &header[..]), (0xe3, &[0u8; 16][..])] {
+            out.extend([0xff, marker]);
+            out.extend((payload.len() as u16 + 2).to_be_bytes());
+            out.extend(payload);
+        }
+        out.extend([0xff, 0xd9, 0, 0]);
+        out
+    }
+
+    #[test]
+    fn rejects_overflowing_sizes() {
+        // 1 + usize::MAX overflows; decode must return None instead of panicking.
+        assert!(is_ijpeg(&ijpeg_with_sizes(1, usize::MAX as u64)));
+        assert!(decode(&ijpeg_with_sizes(1, usize::MAX as u64)).is_none());
+        // Sizes that fit in `usize` but exceed the data are rejected too.
+        assert!(decode(&ijpeg_with_sizes(8, 64)).is_none());
     }
 
     #[test]

@@ -99,12 +99,6 @@ pub fn thermal_index(surface_k: f32, inside_k: f32, outside_k: f32) -> f32 {
     (surface_k - outside_k) / (inside_k - outside_k)
 }
 
-/// Mask of pixels matched by any of `isotherms`.
-pub fn isotherm_mask(kelvin: &[f32], isotherms: &[Isotherm]) -> Vec<bool> {
-    let matchers: Vec<_> = isotherms.iter().map(|i| i.kind.matcher()).collect();
-    kelvin.iter().map(|&k| matchers.iter().any(|m| m(k))).collect()
-}
-
 // ---------------------------------------------------------------------------- auto-inspect
 
 /// What the automatic inspection looks for.
@@ -235,7 +229,7 @@ pub fn cold_delta_severity(delta_k: f32) -> Severity {
 }
 
 /// Median of the finite temperatures.
-pub fn median(kelvin: &[f32]) -> Option<f32> {
+fn median(kelvin: &[f32]) -> Option<f32> {
     let mut v: Vec<f32> = kelvin.iter().copied().filter(|k| k.is_finite()).collect();
     if v.is_empty() {
         return None;
@@ -381,11 +375,6 @@ mod tests {
         assert!(above(300.5) && !above(300.0));
         let iv = IsothermKind::Interval { lo: 310.0, hi: 300.0 }.matcher();
         assert!(iv(300.0) && iv(305.0) && iv(310.0) && !iv(310.1));
-        let mask = isotherm_mask(
-            &[290.0, 305.0, 320.0],
-            &[Isotherm { kind: IsothermKind::Below { t: 295.0 }, color: [0, 0, 255], opacity: 1.0 }],
-        );
-        assert_eq!(mask, vec![true, false, false]);
     }
 
     #[test]

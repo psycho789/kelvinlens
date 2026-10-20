@@ -319,11 +319,6 @@ pub fn generate(info: &ReportInfo, images: &[ReportImage], generator: &str) -> R
     }
 }
 
-/// The PDF report.
-pub fn pdf(info: &ReportInfo, images: &[ReportImage], generator: &str) -> Result<Vec<u8>> {
-    pdf_from(&prepare(info, images, generator)?)
-}
-
 // ---------------------------------------------------------------------------- prepared data
 
 /// Everything a report shows, already computed and formatted, for the PDF and HTML writers.
@@ -580,7 +575,7 @@ fn decode_logo(s: &str) -> Result<Vec<u8>> {
 
 use image::ImageEncoder as _;
 
-pub fn base64_decode(s: &str) -> Option<Vec<u8>> {
+fn base64_decode(s: &str) -> Option<Vec<u8>> {
     let val = |c: u8| -> Option<u32> {
         Some(match c {
             b'A'..=b'Z' => c - b'A',
@@ -714,10 +709,7 @@ fn prepare_image(number: usize, item: &ReportImage, info: &ReportInfo, template:
                 .iter()
                 .position(|m| m.label == name)
                 .or_else(|| item.measurements.iter().position(|m| m.label.eq_ignore_ascii_case(name)))?;
-            Some(formula::Value::Measurement {
-                stats: stats[i].as_ref(),
-                spot: matches!(item.measurements[i].shape, Shape::Spot { .. }),
-            })
+            Some(formula::Value::Measurement { stats: stats[i].as_ref() })
         },
         unit,
     );

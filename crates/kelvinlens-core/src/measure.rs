@@ -92,14 +92,6 @@ impl Stat {
             Stat::Avg => s.avg,
         }
     }
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Stat::Min => "min",
-            Stat::Max => "max",
-            Stat::Avg => "avg",
-        }
-    }
 }
 
 /// Raises an alarm when the chosen statistic is above `above` or below `below` (kelvin).

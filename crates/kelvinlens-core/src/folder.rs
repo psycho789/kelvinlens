@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 /// File extensions that may hold a supported thermogram.
-pub const EXTENSIONS: [&str; 9] = ["jpg", "jpeg", "is2", "irg", "tif", "tiff", "png", "seq", "csq"];
+const EXTENSIONS: [&str; 9] = ["jpg", "jpeg", "is2", "irg", "tif", "tiff", "png", "seq", "csq"];
 
 /// Candidate files directly inside `dir`, sorted by name. Whether each one really is a
 /// thermogram is only known after opening it.
@@ -16,7 +16,7 @@ pub fn candidates(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-pub fn has_supported_extension(path: &Path) -> bool {
+fn has_supported_extension(path: &Path) -> bool {
     let hidden = path.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.'));
     let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase());
     !hidden && ext.is_some_and(|e| EXTENSIONS.contains(&e.as_str()))
