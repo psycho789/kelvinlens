@@ -5,12 +5,21 @@
 //! to the previous one by normalised cross-correlation of temperatures, searched coarse to fine.
 //! Overlaps are blended with weights that fall off towards each image's edges, so seams don't show.
 
+use std::path::{Path, PathBuf};
+
 use serde::Serialize;
 
 use crate::{Error, Result};
 
 /// Largest stitched canvas, in pixels (width × height); larger results are refused.
 const MAX_CANVAS_PIXELS: usize = 40_000_000;
+
+/// Where an in-memory panorama of `first` would be saved: `<dir>/<stem>-panorama.tiff`.
+pub fn output_path(first: &Path) -> PathBuf {
+    let dir = first.parent().map(Path::to_path_buf).unwrap_or_default();
+    let stem = first.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "image".into());
+    dir.join(format!("{stem}-panorama.tiff"))
+}
 
 /// Smallest overlap between neighbours, as a share of the smaller image's area.
 const MIN_OVERLAP: f32 = 0.15;
@@ -341,5 +350,15 @@ mod tests {
         let tiles = [Tile { kelvin: &flat, width: 50, height: 50 }, Tile { kelvin: &flat, width: 50, height: 50 }];
         assert!(stitch(&tiles, &[]).unwrap_err().to_string().contains("does not overlap"));
         assert!(stitch(&tiles[..1], &[]).is_err());
+    }
+
+    #[test]
+    fn output_path_uses_stem_and_folder() {
+        assert_eq!(output_path(Path::new("/a/b/IR_0001.jpg")), PathBuf::from("/a/b/IR_0001-panorama.tiff"));
+    }
+
+    #[test]
+    fn output_path_without_stem_falls_back() {
+        assert_eq!(output_path(Path::new("")), PathBuf::from("image-panorama.tiff"));
     }
 }

@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 use crate::Unit;
-use crate::measure::{Measurement, Stats};
+use crate::measure::{self, Measurement, Stats};
 
 /// Why a formula has no value. The text is what the user sees in `FormulaResult::error`.
 #[derive(Clone, Debug, PartialEq)]
@@ -72,6 +72,19 @@ pub enum Value<'a> {
     Measurement { stats: Option<&'a Stats> },
     /// An earlier formula's result.
     Number(f64),
+}
+
+/// Evaluates `formulas` for the measurements of an image with temperatures `kelvin`.
+pub fn evaluate_for_image(
+    kelvin: &[f32],
+    width: usize,
+    height: usize,
+    measurements: &[Measurement],
+    formulas: &[Formula],
+    unit: Unit,
+) -> Vec<FormulaResult> {
+    let stats = measure::stats_each(kelvin, width, height, measurements.iter().map(|m| &m.shape));
+    evaluate_measured(formulas, measurements, &stats, unit)
 }
 
 /// Evaluates `formulas` against `measurements`, whose statistics are `stats` in the same order. A
@@ -506,5 +519,18 @@ mod tests {
         assert!((out[1].value.unwrap() - 14.0).abs() < 1e-4);
         assert!(out[2].error.is_some() && out[2].value.is_none());
         assert!((out[3].value.unwrap() - 15.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn evaluate_for_image_matches_manual_stats() {
+        let k = vec![300.0f32; 4];
+        let ms = [Measurement::new("Sp1", measure::Shape::Spot { x: 0.5, y: 0.5 })];
+        let formulas = [Formula { label: "A".into(), expression: "Sp1.avg".into(), kind: ResultKind::Number }];
+        let stats = [measure::stats(&k, 2, 2, &ms[0].shape)];
+        let expected = evaluate_measured(&formulas, &ms, &stats, Unit::Kelvin);
+        let got = evaluate_for_image(&k, 2, 2, &ms, &formulas, Unit::Kelvin);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].value, expected[0].value);
+        assert!(got[0].value.is_some());
     }
 }

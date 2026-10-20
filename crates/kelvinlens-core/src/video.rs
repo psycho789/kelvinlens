@@ -203,6 +203,32 @@ impl Video {
     }
 }
 
+/// `current` minus the mean of `previous` (kelvin, same size), optionally 2×2 binned.
+pub fn difference_from_mean(
+    current: &[f32],
+    previous: &[&[f32]],
+    width: usize,
+    height: usize,
+    binning: bool,
+) -> Vec<f32> {
+    let mut diff: Vec<f32> = if previous.is_empty() {
+        vec![0.0; width * height]
+    } else {
+        let mut mean = vec![0f64; width * height];
+        for frame in previous {
+            for (m, k) in mean.iter_mut().zip(*frame) {
+                *m += *k as f64;
+            }
+        }
+        let n = previous.len() as f64;
+        current.iter().zip(&mean).map(|(k, m)| (*k as f64 - m / n) as f32).collect()
+    };
+    if binning {
+        diff = bin2x2(&diff, width, height);
+    }
+    diff
+}
+
 /// 2×2 pixel binning that keeps the image size: each block becomes its mean (NaN skipped), which
 /// halves the noise of a difference image at the cost of resolution.
 pub fn bin2x2(values: &[f32], width: usize, height: usize) -> Vec<f32> {
@@ -446,5 +472,29 @@ mod tests {
         assert!(Video::open(&p).is_err());
         std::fs::remove_dir_all(p.parent().unwrap()).unwrap();
         assert!(is_video(Path::new("x/Rec-0001.SEQ")) && is_video(Path::new("a.csq")) && !is_video(Path::new("a.jpg")));
+    }
+
+    #[test]
+    fn difference_with_no_reference_is_zero() {
+        assert_eq!(difference_from_mean(&[5.0; 4], &[], 2, 2, false), vec![0.0; 4]);
+    }
+
+    #[test]
+    fn difference_from_two_references_is_current_minus_mean() {
+        let (a, b) = ([8.0f32; 4], [6.0f32; 4]);
+        let out = difference_from_mean(&[10.0; 4], &[&a, &b], 2, 2, false);
+        assert_eq!(out, vec![3.0; 4]);
+    }
+
+    #[test]
+    fn difference_binning_averages_blocks_and_keeps_size() {
+        // bin2x2 keeps the image size (each 2×2 block becomes its mean).
+        let current = [1.0, 3.0, 10.0, 20.0, 5.0, 7.0, 30.0, 40.0];
+        let out = difference_from_mean(&current, &[], 4, 2, false);
+        assert_eq!(out.len(), 8);
+        let binned = difference_from_mean(&current, &[&[0.0; 8]], 4, 2, true);
+        assert_eq!(binned.len(), 8);
+        assert_eq!(binned[0], 4.0);
+        assert_eq!(binned[2], 25.0);
     }
 }

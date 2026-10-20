@@ -25,6 +25,7 @@ pub mod report;
 mod report_html;
 pub mod sidecar;
 pub mod thermogram;
+pub mod triage;
 pub mod unit;
 pub mod video;
 mod xml;

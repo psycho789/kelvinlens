@@ -285,6 +285,24 @@ pub fn stats(kelvin: &[f32], width: usize, height: usize, shape: &Shape) -> Opti
     stats_of(kelvin, width, &pixels(shape, kelvin, width, height))
 }
 
+/// Statistics of each shape, in order.
+pub fn stats_each<'a>(
+    kelvin: &[f32],
+    width: usize,
+    height: usize,
+    shapes: impl IntoIterator<Item = &'a Shape>,
+) -> Vec<Option<Stats>> {
+    shapes.into_iter().map(|s| stats(kelvin, width, height, s)).collect()
+}
+
+/// Outline loops of a magic-wand shape; empty for every other shape.
+pub fn outline_of(shape: &Shape, kelvin: &[f32], width: usize, height: usize) -> Vec<Vec<[f32; 2]>> {
+    match shape {
+        Shape::Wand { .. } => outline(&pixels(shape, kelvin, width, height), width, height),
+        _ => Vec::new(),
+    }
+}
+
 pub fn stats_of(kelvin: &[f32], width: usize, pixels: &[[usize; 2]]) -> Option<Stats> {
     let mut acc: Option<Stats> = None;
     let (mut sum, mut sum2) = (0.0f64, 0.0f64);
@@ -622,5 +640,37 @@ mod tests {
         )
         .unwrap();
         assert_eq!(with_alarm.alarm, Some(Alarm { stat: Stat::Avg, above: Some(300.0), below: None }));
+    }
+
+    #[test]
+    fn stats_each_matches_stats_per_shape() {
+        let k = image();
+        let shapes = [Shape::Spot { x: 1.5, y: 1.5 }, Shape::Box { x: 0.0, y: 0.0, w: 2.0, h: 2.0 }];
+        let each = stats_each(&k, 4, 3, &shapes);
+        assert_eq!(each.len(), 2);
+        for (got, s) in each.iter().zip(&shapes) {
+            assert_eq!(*got, stats(&k, 4, 3, s));
+        }
+    }
+
+    #[test]
+    fn outline_of_is_empty_for_non_wand() {
+        let k = image();
+        assert!(outline_of(&Shape::Spot { x: 1.5, y: 1.5 }, &k, 4, 3).is_empty());
+        assert!(outline_of(&Shape::Box { x: 0.0, y: 0.0, w: 2.0, h: 2.0 }, &k, 4, 3).is_empty());
+    }
+
+    #[test]
+    fn outline_of_wand_matches_outline_of_pixels() {
+        let mut k = vec![300.0f32; 5 * 5];
+        for y in 1..3 {
+            for x in 1..3 {
+                k[y * 5 + x] = 350.0;
+            }
+        }
+        let wand = Shape::Wand { x: 1.5, y: 1.5, tolerance: 1.0 };
+        let expected = outline(&pixels(&wand, &k, 5, 5), 5, 5);
+        assert!(!expected.is_empty());
+        assert_eq!(outline_of(&wand, &k, 5, 5), expected);
     }
 }

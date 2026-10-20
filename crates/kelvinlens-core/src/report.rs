@@ -644,10 +644,7 @@ fn prepare_image(number: usize, item: &ReportImage, info: &ReportInfo, template:
                     .unwrap_or_default(),
                 _ => String::new(),
             };
-            let outline = match m.shape {
-                Shape::Wand { .. } => measure::outline(&measure::pixels(&m.shape, kelvin, w, h), w, h),
-                _ => Vec::new(),
-            };
+            let outline = measure::outline_of(&m.shape, kelvin, w, h);
             MeasurementRow {
                 label: m.label.clone(),
                 kind: m.shape.kind_name(),

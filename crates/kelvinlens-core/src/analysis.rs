@@ -77,6 +77,24 @@ impl IsothermKind {
     }
 }
 
+/// Share of each area shape matched by any isotherm (`None` for non-areas or no isotherms).
+pub fn coverage_by_shape(
+    kelvin: &[f32],
+    width: usize,
+    height: usize,
+    shapes: &[Shape],
+    isotherms: &[Isotherm],
+) -> Vec<Option<f32>> {
+    let any = any_matcher(isotherms);
+    shapes
+        .iter()
+        .map(|s| {
+            let any = any.as_ref().filter(|_| s.is_area())?;
+            measure::coverage(kelvin, width, height, s, any)
+        })
+        .collect()
+}
+
 /// One predicate that is true where any of `isotherms` matches; `None` when there are none.
 pub fn any_matcher(isotherms: &[Isotherm]) -> Option<impl Fn(f32) -> bool + use<>> {
     if isotherms.is_empty() {
@@ -509,5 +527,17 @@ mod tests {
             serde_json::from_str(r#"{"kind":"insulation","insideK":293,"outsideK":273,"index":0.7,"color":[0,0,255]}"#)
                 .unwrap();
         assert_eq!(back.opacity, 1.0);
+    }
+
+    #[test]
+    fn coverage_by_shape_skips_lines_and_empty_isotherms() {
+        let k: Vec<f32> = (0..16).map(|i| 290.0 + i as f32).collect();
+        let shapes =
+            [Shape::Box { x: 0.0, y: 0.0, w: 4.0, h: 4.0 }, Shape::Line { x1: 0.0, y1: 0.0, x2: 3.0, y2: 3.0 }];
+        let iso = Isotherm { kind: IsothermKind::Above { t: 297.5 }, color: [255, 0, 0], opacity: 1.0 };
+        let out = coverage_by_shape(&k, 4, 4, &shapes, &[iso]);
+        assert_eq!(out[0], Some(0.5));
+        assert_eq!(out[1], None);
+        assert_eq!(coverage_by_shape(&k, 4, 4, &shapes, &[]), vec![None, None]);
     }
 }
