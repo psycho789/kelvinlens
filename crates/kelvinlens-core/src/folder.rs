@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 /// File extensions that may hold a supported thermogram.
-pub const EXTENSIONS: [&str; 7] = ["jpg", "jpeg", "is2", "irg", "tif", "tiff", "png"];
+pub const EXTENSIONS: [&str; 9] = ["jpg", "jpeg", "is2", "irg", "tif", "tiff", "png", "seq", "csq"];
 
 /// Candidate files directly inside `dir`, sorted by name. Whether each one really is a
 /// thermogram is only known after opening it.

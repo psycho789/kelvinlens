@@ -1,5 +1,7 @@
 Kelvinlens __VERSION__ — free thermal image viewer, analyser and report tool.
 
+Thermal images and FLIR radiometric video; recalculation with new parameters; spot, area, polygon, line and magic-wand measurements with profiles, formulas and alarms; isotherms, condensation and insulation alarms; automatic hot/cold-spot inspection with severity grading; batch processing, hotspot triage, trends, maps, 3D relief and panoramas; PDF and HTML reports from templates. See the [README](https://github.com/psycho789/kelvinlens#features) for the full list.
+
 ## Download
 
 | System | File |

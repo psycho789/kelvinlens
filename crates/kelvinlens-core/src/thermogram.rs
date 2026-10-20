@@ -7,7 +7,9 @@ use libblackbody::{FlirThermogram, Measurement as FileMeasurement, Thermogram, T
 use serde::Serialize;
 use uom::si::thermodynamic_temperature::kelvin as K;
 
+use crate::fff;
 use crate::measure::{Measurement, Shape};
+use crate::palette;
 use crate::params::{Param, Params};
 use crate::{Error, Result};
 
@@ -20,6 +22,10 @@ pub enum Format {
     Irg,
     Png,
     Tiff,
+    /// A frame of a FLIR SEQ or CSQ radiometric video.
+    Video,
+    /// Stitched from several images in Kelvinlens.
+    Panorama,
 }
 
 impl Format {
@@ -31,12 +37,14 @@ impl Format {
             Format::Irg => "InfiRay IRG",
             Format::Png => "16-bit PNG (centikelvin)",
             Format::Tiff => "TIFF",
+            Format::Video => "FLIR radiometric video",
+            Format::Panorama => "Panorama",
         }
     }
 }
 
 /// Camera details recorded in the file.
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Camera {
     pub description: Option<String>,
@@ -44,6 +52,18 @@ pub struct Camera {
     pub date_time: Option<String>,
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
+    /// Metres above sea level.
+    pub altitude: Option<f32>,
+    /// Compass direction the camera faced, in degrees.
+    pub heading: Option<f32>,
+    pub lens: Option<String>,
+    /// Horizontal field of view in degrees.
+    pub field_of_view: Option<f32>,
+    pub focal_length: Option<f32>,
+    /// Drone gimbal roll, pitch and yaw in degrees (DJI XMP).
+    pub gimbal: Option<[f32; 3]>,
+    /// Drone height above the take-off point in metres (DJI XMP).
+    pub relative_altitude: Option<f32>,
 }
 
 /// An axis-aligned rectangle in pixels.
@@ -95,17 +115,105 @@ pub struct ThermalImage {
     camera: Camera,
     embedded_measurements: Vec<Measurement>,
     embedded_range: Option<[f32; 2]>,
+    embedded_palette: Option<Vec<[u8; 3]>>,
     photo: Option<Photo>,
     pip: Option<Pip>,
 }
 
 impl ThermalImage {
     pub fn open(path: &Path) -> Result<ThermalImage> {
-        let thermogram = Thermogram::from_file(path).map_err(|e| Error::Open(e.to_string()))?;
-        Ok(Self::from_thermogram(path, thermogram))
+        let bytes = std::fs::read(path).map_err(|e| Error::Open(e.to_string()))?;
+        let thermogram = Thermogram::from_bytes(&bytes).map_err(|e| Error::Open(e.to_string()))?;
+        let mut image = Self::from_thermogram(path, thermogram);
+        if image.format == Format::Flir {
+            image.add_flir_details(&bytes);
+        }
+        Ok(image)
+    }
+
+    /// Temperatures and parameters only, without decoding the photo: for scanning many files.
+    pub fn open_temperatures(path: &Path) -> Result<ThermalImage> {
+        let bytes = std::fs::read(path).map_err(|e| Error::Open(e.to_string()))?;
+        let thermogram = Thermogram::from_bytes(&bytes).map_err(|e| Error::Open(e.to_string()))?;
+        Ok(Self::build(path, thermogram, false))
+    }
+
+    /// One frame of a FLIR video: an FFF block with uncompressed raw data.
+    pub fn from_fff_frame(path: &Path, fff_block: &[u8]) -> Result<ThermalImage> {
+        let flir = FlirThermogram::from_bytes(fff_block).ok_or_else(|| Error::Open("unreadable video frame".into()))?;
+        let mut image = Self::from_thermogram(path, Thermogram::Flir(flir));
+        image.format = Format::Video;
+        if let Some(x) = fff::camera_extras(fff_block) {
+            image.apply_extras(&x);
+        }
+        Ok(image)
+    }
+
+    /// An image made from temperatures alone (a panorama), whose parameters cannot change.
+    pub fn from_kelvin(
+        path: &Path,
+        format: Format,
+        kelvin: Vec<f32>,
+        width: usize,
+        height: usize,
+        camera: Camera,
+    ) -> Result<ThermalImage> {
+        if kelvin.len() != width * height || width == 0 || height == 0 {
+            return Err(Error::Open("temperature data does not match the image size".into()));
+        }
+        Ok(ThermalImage {
+            path: path.to_path_buf(),
+            format,
+            width,
+            height,
+            kelvin,
+            model: Model::Fixed,
+            file_params: Params::default(),
+            params: Params::default(),
+            camera,
+            embedded_measurements: Vec::new(),
+            embedded_range: None,
+            embedded_palette: None,
+            photo: None,
+            pip: None,
+        })
+    }
+
+    /// Lens, field of view and serial from the FLIR record, and drone attitude from DJI XMP.
+    fn add_flir_details(&mut self, bytes: &[u8]) {
+        if let Some((block, _)) = fff::from_jpeg(bytes)
+            && let Some(x) = fff::camera_extras(&block)
+        {
+            self.apply_extras(&x);
+        }
+        let xmp = |name: &str| xmp_number(bytes, name);
+        if let (Some(r), Some(p), Some(y)) = (xmp("GimbalRollDegree"), xmp("GimbalPitchDegree"), xmp("GimbalYawDegree"))
+        {
+            self.camera.gimbal = Some([r, p, y]);
+        }
+        self.camera.relative_altitude = xmp("RelativeAltitude");
+    }
+
+    fn apply_extras(&mut self, x: &fff::CameraExtras) {
+        let c = &mut self.camera;
+        if c.description.is_none() {
+            c.description = x.model.clone();
+        }
+        c.serial_number = c.serial_number.clone().or_else(|| x.serial.clone());
+        c.lens = c.lens.clone().or_else(|| x.lens.clone());
+        c.field_of_view = c.field_of_view.or(x.field_of_view);
+        if c.date_time.is_none()
+            && let Some((secs, tz)) = x.time
+        {
+            c.date_time = Some(format_time(secs, tz));
+        }
     }
 
     fn from_thermogram(path: &Path, t: Thermogram) -> ThermalImage {
+        Self::build(path, t, true)
+    }
+
+    fn build(path: &Path, t: Thermogram, with_photo: bool) -> ThermalImage {
         let thermal = t.thermal();
         let (width, height) = (thermal.width(), thermal.height());
         let kelvin: Vec<f32> = thermal.pixels().map(|v| v.get::<K>()).collect();
@@ -118,10 +226,20 @@ impl ThermalImage {
             date_time: metadata.date_time.as_deref().map(exif_date),
             latitude: metadata.latitude,
             longitude: metadata.longitude,
+            altitude: metadata.altitude,
+            heading: metadata.heading,
+            focal_length: metadata.focal_length,
+            ..Default::default()
         };
+        let embedded_palette = t.palette().filter(|p| p.len() >= 2).map(|p| {
+            palette::resample(
+                &p.iter().map(|c| c.map(|v| (v * 255.0).round().clamp(0.0, 255.0) as u8)).collect::<Vec<_>>(),
+            )
+        });
         let embedded_measurements = t.measurements().iter().filter_map(convert_measurement).collect();
         let embedded_range = t.embedded_render_range().map(|r| [r[0].get::<K>(), r[1].get::<K>()]);
-        let photo = t.visual().map(|v| Photo {
+        let visual = if with_photo { t.visual() } else { None };
+        let photo = visual.map(|v| Photo {
             width: v.width(),
             height: v.height(),
             rgb: v.pixels().flat_map(|p| [p.r, p.g, p.b]).collect(),
@@ -153,6 +271,7 @@ impl ThermalImage {
             camera,
             embedded_measurements,
             embedded_range,
+            embedded_palette,
             photo,
             pip,
         }
@@ -285,6 +404,50 @@ impl ThermalImage {
     pub fn pip(&self) -> Option<Pip> {
         self.pip
     }
+
+    /// The palette the camera rendered the image with, as 256 colours.
+    pub fn embedded_palette(&self) -> Option<&[[u8; 3]]> {
+        self.embedded_palette.as_deref()
+    }
+
+    /// Whether the temperatures come from a FLIR raw-data model (and can be saved back into a
+    /// FLIR file with new parameters).
+    pub fn is_flir_jpeg(&self) -> bool {
+        self.format == Format::Flir
+    }
+}
+
+/// A number attribute or element from DJI XMP, such as `drone-dji:GimbalYawDegree="+82.40"`.
+fn xmp_number(bytes: &[u8], name: &str) -> Option<f32> {
+    let key = format!("drone-dji:{name}");
+    let at = bytes.windows(key.len()).position(|w| w == key.as_bytes())? + key.len();
+    let rest = &bytes[at..(at + 40).min(bytes.len())];
+    let start = rest.iter().position(|&c| c == b'"' || c == b'>')? + 1;
+    let end = rest[start..].iter().position(|&c| c == b'"' || c == b'<')? + start;
+    std::str::from_utf8(&rest[start..end]).ok()?.trim().parse().ok()
+}
+
+/// `YYYY-MM-DD HH:MM:SS.mmm±hh:mm` local time from Unix seconds and a FLIR time-zone field
+/// (minutes west of UTC, as ExifTool reads it).
+pub fn format_time(secs: f64, tz_minutes: i16) -> String {
+    let local = secs - tz_minutes as f64 * 60.0;
+    let days = (local / 86_400.0).floor() as i64;
+    let rem = local - days as f64 * 86_400.0;
+    // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    let ms = (rem * 1000.0).round() as i64;
+    let (h, mi, s, ms) = (ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000);
+    let off = -(tz_minutes as i32);
+    let sign = if off < 0 { '-' } else { '+' };
+    format!("{y:04}-{m:02}-{d:02} {h:02}:{mi:02}:{s:02}.{ms:03}{sign}{:02}:{:02}", off.abs() / 60, off.abs() % 60)
 }
 
 /// EXIF writes dates as `YYYY:MM:DD HH:MM:SS`; show them as `YYYY-MM-DD HH:MM:SS`.
@@ -348,7 +511,7 @@ fn convert_measurement(m: &FileMeasurement) -> Option<Measurement> {
         }
         _ => return None,
     };
-    Some(Measurement { label: label.trim().to_string(), shape })
+    Some(Measurement::new(label.trim(), shape))
 }
 
 #[cfg(test)]
@@ -379,6 +542,24 @@ mod tests {
         let p = Params { emissivity: Some(0.1), reflected_k: Some(400.0), ..Default::default() };
         let out = fluke_object_kelvin(&[200f32.powi(4)], &p);
         assert!(out[0].is_nan());
+    }
+
+    #[test]
+    fn flir_time_matches_exiftool() {
+        // ExifTool shows the SampleSEQ frame time as 2012:06:13 14:52:08.699-05:00.
+        let secs = 1_339_617_128.699;
+        assert_eq!(format_time(secs, 300), "2012-06-13 14:52:08.699-05:00");
+        assert_eq!(format_time(0.0, 0), "1970-01-01 00:00:00.000+00:00");
+        assert_eq!(format_time(951_782_400.0, -60), "2000-02-29 01:00:00.000+01:00");
+    }
+
+    #[test]
+    fn reads_dji_xmp_numbers() {
+        let xmp = br#"<x drone-dji:GimbalYawDegree="+82.40" drone-dji:GimbalRollDegree="-0.5"><drone-dji:RelativeAltitude>1.90</drone-dji:RelativeAltitude>"#;
+        assert_eq!(xmp_number(xmp, "GimbalYawDegree"), Some(82.4));
+        assert_eq!(xmp_number(xmp, "GimbalRollDegree"), Some(-0.5));
+        assert_eq!(xmp_number(xmp, "RelativeAltitude"), Some(1.9));
+        assert_eq!(xmp_number(xmp, "GimbalPitchDegree"), None);
     }
 
     #[test]

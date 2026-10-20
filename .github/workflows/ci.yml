@@ -80,3 +80,7 @@ jobs:
           out=$("$bin" --self-test testdata/FLIR_E40.jpg)
           echo "$out"
           [[ "$out" == *"160x120 centre=20.92C"* ]]
+          # Compressed radiometric video (JPEG-LS) decodes the same on every system.
+          out=$("$bin" --self-test testdata/SampleCSQ.csq)
+          echo "$out"
+          [[ "$out" == *"1024x768 centre=31.28C"* ]]

@@ -1,16 +1,16 @@
-//! Colour palettes and rendering temperatures to RGB.
+//! Colour palettes. Every palette has 256 colours, index 0 for the coldest end of the range.
 //!
-//! The UI renders with the same palettes and the same mapping (`index`), so on-screen images,
-//! exported PNGs and report images agree pixel for pixel.
+//! The built-in palettes are defined here; custom palettes and the camera's own palette arrive
+//! as colour tables (see `resample`). Mapping temperatures to palette indices lives in
+//! `render.rs`, so on-screen images, exports and reports agree pixel for pixel.
 
 use libblackbody::palettes;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-/// 256 colours, index 0 for the coldest end of the range.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Palette {
-    pub id: &'static str,
-    pub name: &'static str,
+    pub id: String,
+    pub name: String,
     pub colors: Vec<[u8; 3]>,
 }
 
@@ -23,6 +23,8 @@ pub fn all() -> Vec<Palette> {
         from_stops("rainbow", "Rainbow", RAINBOW),
         from_stops("white-hot", "White hot", &[(0.0, [0, 0, 0]), (1.0, [255, 255, 255])]),
         from_stops("black-hot", "Black hot", &[(0.0, [255, 255, 255]), (1.0, [0, 0, 0])]),
+        from_stops("arctic", "Arctic", ARCTIC),
+        from_stops("lava", "Lava", LAVA),
         from_table("inferno", "Inferno", &palettes::INFERNO),
         from_table("turbo", "Turbo", &palettes::TURBO),
         from_table("viridis", "Viridis", &palettes::VIRIDIS),
@@ -56,8 +58,38 @@ const RAINBOW: &[(f32, [u8; 3])] = &[
     (1.00, [255, 255, 255]),
 ];
 
-fn from_stops(id: &'static str, name: &'static str, stops: &[(f32, [u8; 3])]) -> Palette {
-    let colors = (0..256)
+/// Cold blues through white to warm golds, for scenes near ambient.
+const ARCTIC: &[(f32, [u8; 3])] = &[
+    (0.00, [8, 16, 64]),
+    (0.30, [20, 90, 200]),
+    (0.50, [150, 210, 245]),
+    (0.55, [250, 245, 235]),
+    (0.75, [245, 170, 40]),
+    (1.00, [255, 240, 120]),
+];
+
+/// Black through deep red and orange to white, for hot equipment.
+const LAVA: &[(f32, [u8; 3])] = &[
+    (0.00, [0, 0, 0]),
+    (0.30, [90, 10, 30]),
+    (0.55, [200, 30, 20]),
+    (0.75, [250, 120, 10]),
+    (0.90, [255, 210, 80]),
+    (1.00, [255, 255, 255]),
+];
+
+/// A palette from colour stops at positions 0–1 (sorted), interpolated linearly in RGB.
+pub fn from_stops(id: &str, name: &str, stops: &[(f32, [u8; 3])]) -> Palette {
+    Palette { id: id.into(), name: name.into(), colors: stops_to_colors(stops) }
+}
+
+pub fn stops_to_colors(stops: &[(f32, [u8; 3])]) -> Vec<[u8; 3]> {
+    match stops {
+        [] => return vec![NO_DATA; 256],
+        [(_, c)] => return vec![*c; 256],
+        _ => {}
+    }
+    (0..256)
         .map(|i| {
             let t = i as f32 / 255.0;
             let upper = stops.iter().position(|(at, _)| *at >= t).unwrap_or(stops.len() - 1).max(1);
@@ -65,36 +97,49 @@ fn from_stops(id: &'static str, name: &'static str, stops: &[(f32, [u8; 3])]) ->
             let f = if b > a { ((t - a) / (b - a)).clamp(0.0, 1.0) } else { 0.0 };
             [0, 1, 2].map(|c| (ca[c] as f32 + (cb[c] as f32 - ca[c] as f32) * f).round() as u8)
         })
-        .collect();
-    Palette { id, name, colors }
+        .collect()
 }
 
-fn from_table(id: &'static str, name: &'static str, table: &[[f32; 3]; 256]) -> Palette {
+fn from_table(id: &str, name: &str, table: &[[f32; 3]; 256]) -> Palette {
     let colors = table.iter().map(|c| c.map(|v| (v * 255.0).round().clamp(0.0, 255.0) as u8)).collect();
-    Palette { id, name, colors }
+    Palette { id: id.into(), name: name.into(), colors }
 }
 
-/// Palette index for `kelvin` within `range`; `None` for NaN.
-pub fn index(kelvin: f32, range: [f32; 2]) -> Option<usize> {
-    if kelvin.is_nan() {
-        return None;
+/// Stretches or shrinks any colour table to 256 entries by linear interpolation.
+pub fn resample(colors: &[[u8; 3]]) -> Vec<[u8; 3]> {
+    if colors.len() == 256 || colors.len() < 2 {
+        return if colors.is_empty() {
+            vec![NO_DATA; 256]
+        } else if colors.len() == 1 {
+            vec![colors[0]; 256]
+        } else {
+            colors.to_vec()
+        };
     }
-    let span = range[1] - range[0];
-    if span <= 0.0 {
-        return Some(if kelvin < range[0] { 0 } else { 255 });
-    }
-    let t = (kelvin - range[0]) / span;
-    Some(((t * 256.0).floor()).clamp(0.0, 255.0) as usize)
+    let n = colors.len() - 1;
+    (0..256)
+        .map(|i| {
+            let pos = i as f32 / 255.0 * n as f32;
+            let lo = (pos.floor() as usize).min(n);
+            let hi = (lo + 1).min(n);
+            let f = pos - lo as f32;
+            [0, 1, 2].map(|c| (colors[lo][c] as f32 + (colors[hi][c] as f32 - colors[lo][c] as f32) * f).round() as u8)
+        })
+        .collect()
 }
 
-/// Renders temperatures to RGB bytes (3 per pixel) with `palette` over `range` (kelvin).
-pub fn render(kelvin: &[f32], range: [f32; 2], palette: &Palette) -> Vec<u8> {
-    kelvin.iter().flat_map(|&k| index(k, range).map(|i| palette.colors[i]).unwrap_or(NO_DATA)).collect()
+impl Palette {
+    /// The same palette with exactly 256 colours.
+    pub fn normalized(mut self) -> Palette {
+        self.colors = resample(&self.colors);
+        self
+    }
 }
 
 /// A horizontal colour bar, `width` × 1 pixels, coldest on the left.
 pub fn bar(palette: &Palette, width: usize) -> Vec<u8> {
-    (0..width).flat_map(|i| palette.colors[i * 256 / width.max(1)]).collect()
+    let n = palette.colors.len().max(1);
+    (0..width).flat_map(|i| palette.colors[(i * n / width.max(1)).min(n - 1)]).collect()
 }
 
 #[cfg(test)]
@@ -120,21 +165,12 @@ mod tests {
     }
 
     #[test]
-    fn index_clips_and_maps_range_ends() {
-        let r = [280.0, 300.0];
-        assert_eq!(index(270.0, r), Some(0));
-        assert_eq!(index(280.0, r), Some(0));
-        assert_eq!(index(299.99, r), Some(255));
-        assert_eq!(index(300.0, r), Some(255));
-        assert_eq!(index(290.0, r), Some(128));
-        assert_eq!(index(f32::NAN, r), None);
-        assert_eq!(index(290.0, [290.0, 290.0]), Some(255));
-    }
-
-    #[test]
-    fn render_uses_no_data_colour_for_nan() {
-        let p = by_id("white-hot").unwrap();
-        let rgb = render(&[280.0, f32::NAN, 300.0], [280.0, 300.0], &p);
-        assert_eq!(rgb, vec![0, 0, 0, 128, 128, 128, 255, 255, 255]);
+    fn resample_keeps_ends_and_interpolates() {
+        let r = resample(&[[0, 0, 0], [255, 255, 255]]);
+        assert_eq!((r.len(), r[0], r[255]), (256, [0, 0, 0], [255, 255, 255]));
+        assert_eq!(r[128], [128, 128, 128]);
+        let short = resample(&(0..224u32).map(|i| [i as u8, 0, 0]).collect::<Vec<_>>());
+        assert_eq!((short.len(), short[0][0], short[255][0]), (256, 0, 223));
+        assert_eq!(resample(&[]).len(), 256);
     }
 }

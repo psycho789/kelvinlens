@@ -1,14 +1,45 @@
 //! Per-image edits saved next to the image as `<file name>.kelvinlens.json`, so they travel
 //! with the photo and the original file is never modified.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::analysis::{Finding, Isotherm};
+use crate::formula::Formula;
+use crate::render::Distribution;
 use crate::{Error, Measurement, Params, Result};
 
 pub const SUFFIX: &str = ".kelvinlens.json";
-pub const VERSION: u32 = 1;
+/// 1: params, measurements, notes, palette, range. 2 adds everything else below; 1 files load
+/// unchanged.
+pub const VERSION: u32 = 2;
+
+/// A note or drawing on the image, in thermal-pixel coordinates.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum Annotation {
+    /// A text label pinned at a point.
+    Text { x: f32, y: f32, text: String },
+    /// A freehand stroke.
+    Sketch { points: Vec<[f32; 2]>, color: [u8; 3] },
+}
+
+/// How the image is presented: rotation (degrees clockwise, any angle) and a crop rectangle in
+/// thermal pixels `[x, y, w, h]`. Temperatures and measurement coordinates are unaffected.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Presentation {
+    pub rotation: f32,
+    pub crop: Option<[f32; 4]>,
+}
+
+impl Presentation {
+    pub fn is_identity(&self) -> bool {
+        self.rotation.rem_euclid(360.0) == 0.0 && self.crop.is_none()
+    }
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -21,6 +52,24 @@ pub struct Sidecar {
     pub palette: Option<String>,
     /// Display range in kelvin; absent means automatic.
     pub range: Option<[f32; 2]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub distribution: Option<Distribution>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub isotherms: Vec<Isotherm>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub formulas: Vec<Formula>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub annotations: Vec<Annotation>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub findings: Vec<Finding>,
+    /// Equipment or location tag that groups images of the same thing across visits (trends).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub asset: String,
+    /// Inspection fields a report template asks for (e.g. "Load %", "Component").
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub fields: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Presentation::is_identity")]
+    pub presentation: Presentation,
 }
 
 pub fn path_for(image: &Path) -> PathBuf {
@@ -54,6 +103,7 @@ pub fn save(image: &Path, sidecar: &Sidecar) -> Result<PathBuf> {
 mod tests {
     use super::*;
     use crate::Shape;
+    use crate::analysis::IsothermKind;
 
     #[test]
     fn path_appends_suffix() {
@@ -69,10 +119,20 @@ mod tests {
 
         let edits = Sidecar {
             params: Some(Params { emissivity: Some(0.9), ..Default::default() }),
-            measurements: vec![Measurement { label: "Sp1".into(), shape: Shape::Spot { x: 1.5, y: 2.5 } }],
+            measurements: vec![Measurement::new("Sp1", Shape::Spot { x: 1.5, y: 2.5 })],
             notes: "Breaker 3 hot".into(),
             palette: Some("iron".into()),
             range: Some([290.0, 310.0]),
+            distribution: Some(Distribution::Histogram),
+            isotherms: vec![Isotherm { kind: IsothermKind::Above { t: 330.0 }, color: [255, 0, 0], opacity: 1.0 }],
+            formulas: vec![Formula { label: "Rise".into(), expression: "Sp1 - 20".into(), ..Default::default() }],
+            annotations: vec![
+                Annotation::Text { x: 3.0, y: 4.0, text: "Loose lug".into() },
+                Annotation::Sketch { points: vec![[0.0, 0.0], [5.0, 5.0]], color: [255, 255, 0] },
+            ],
+            asset: "Panel B / breaker 3".into(),
+            fields: BTreeMap::from([("Load %".to_string(), "80".to_string())]),
+            presentation: Presentation { rotation: 90.0, crop: Some([1.0, 2.0, 30.0, 20.0]) },
             ..Default::default()
         };
         save(&image, &edits).unwrap();
@@ -82,9 +142,20 @@ mod tests {
     }
 
     #[test]
-    fn missing_fields_default() {
+    fn version_1_files_still_load() {
+        let v1 = r#"{"version":1,"params":null,"measurements":[{"label":"Sp1","shape":{"kind":"spot","x":1.5,"y":2.5}}],"notes":"x","palette":"iron","range":null}"#;
+        let s: Sidecar = serde_json::from_str(v1).unwrap();
+        assert_eq!(s.notes, "x");
+        assert_eq!(s.measurements.len(), 1);
+        assert!(s.isotherms.is_empty() && s.presentation.is_identity());
+    }
+
+    #[test]
+    fn missing_fields_default_and_empty_extras_are_not_written() {
         let s: Sidecar = serde_json::from_str(r#"{"notes":"x"}"#).unwrap();
         assert_eq!(s.notes, "x");
         assert!(s.measurements.is_empty() && s.params.is_none());
+        let json = serde_json::to_string(&Sidecar::default()).unwrap();
+        assert!(!json.contains("isotherms") && !json.contains("presentation") && !json.contains("asset"), "{json}");
     }
 }

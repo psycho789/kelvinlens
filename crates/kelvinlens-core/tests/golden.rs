@@ -3,17 +3,40 @@
 //!
 //! "Camera" values are what the camera itself displayed or stored. "Reference" values come from
 //! an independent Python implementation of the published FLIR model (exiftool + numpy), run with
-//! the parameters shown; it agreed with libblackbody to 0.01 °C on all three files.
+//! the parameters shown; it agreed with libblackbody to 0.01 °C on all files. Video references
+//! decode the raw frame independently (exiftool, and CharLS through imagecodecs for JPEG-LS).
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use kelvinlens_core::report::{self, ReportImage, ReportInfo};
-use kelvinlens_core::{Format, Measurement, Params, Shape, ThermalImage, measure, palette, sidecar};
+use kelvinlens_core::analysis::{self, InspectSettings, Isotherm, IsothermKind};
+use kelvinlens_core::formula::{Formula, ResultKind};
+use kelvinlens_core::measure::Alarm;
+use kelvinlens_core::render::{Distribution, Look};
+use kelvinlens_core::report::{self, ReportFormat, ReportImage, ReportInfo, TemplateKind};
+use kelvinlens_core::sidecar::{Annotation, Presentation};
+use kelvinlens_core::video::Video;
+use kelvinlens_core::{
+    Format, Measurement, Params, Shape, ThermalImage, export, fff, measure, palette, panorama, sidecar,
+};
 
-fn sample(name: &str) -> ThermalImage {
+fn path(name: &str) -> PathBuf {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testdata").join(name);
     assert!(path.exists(), "{} is missing: run scripts/fetch-testdata.sh first", path.display());
-    ThermalImage::open(&path).expect("sample opens")
+    path
+}
+
+fn sample(name: &str) -> ThermalImage {
+    ThermalImage::open(&path(name)).expect("sample opens")
+}
+
+fn look(img: &ThermalImage, palette_id: &str) -> Look {
+    Look {
+        palette: palette::by_id(palette_id).unwrap(),
+        range: img.range().unwrap(),
+        distribution: Distribution::TemperatureLinear,
+        isotherms: vec![],
+    }
 }
 
 fn c(img: &ThermalImage, x: usize, y: usize) -> f32 {
@@ -149,43 +172,142 @@ fn report_pdf_is_produced() {
     let mut img = sample("FLIR_E40.jpg");
     img.set_params(&changed()).unwrap();
     let range = img.range().unwrap();
-    let measurements = vec![
-        Measurement { label: "Sp1".into(), shape: Shape::Spot { x: 80.5, y: 60.5 } },
-        Measurement { label: "Bx1".into(), shape: Shape::Box { x: 20.0, y: 20.0, w: 40.0, h: 30.0 } },
-        Measurement { label: "El1".into(), shape: Shape::Ellipse { cx: 120.0, cy: 80.0, rx: 15.0, ry: 10.0 } },
-        Measurement { label: "Li1".into(), shape: Shape::Line { x1: 10.0, y1: 110.0, x2: 150.0, y2: 100.0 } },
+    let mut measurements = vec![
+        Measurement::new("Sp1", Shape::Spot { x: 80.5, y: 60.5 }),
+        Measurement::new("Bx1", Shape::Box { x: 20.0, y: 20.0, w: 40.0, h: 30.0 }),
+        Measurement::new("El1", Shape::Ellipse { cx: 120.0, cy: 80.0, rx: 15.0, ry: 10.0 }),
+        Measurement::new("Li1", Shape::Line { x1: 10.0, y1: 110.0, x2: 150.0, y2: 100.0 }),
+        Measurement::new(
+            "Po1",
+            Shape::Polygon { points: vec![[70.0, 10.0], [100.0, 15.0], [95.0, 40.0], [72.0, 35.0]] },
+        ),
+        Measurement::new("Pl1", Shape::Polyline { points: vec![[5.0, 60.0], [60.0, 70.0], [100.0, 55.0]] }),
+        Measurement::new("Wa1", Shape::Wand { x: 80.5, y: 60.5, tolerance: 0.5 }),
     ];
-    let info = ReportInfo {
-        title: "Golden test report".into(),
-        site: "Test bench".into(),
-        inspector: "CI".into(),
-        date: "2026-10-19".into(),
-        summary: "Automated check that report generation works.".into(),
-        include_photos: true,
-        ..Default::default()
-    };
+    measurements[1].alarm = Some(Alarm { stat: measure::Stat::Max, above: Some(range[0] + 1.0), below: None });
+    let isotherms =
+        vec![Isotherm { kind: IsothermKind::Above { t: range[1] - 1.5 }, color: [255, 40, 40], opacity: 1.0 }];
+    let findings = analysis::inspect(
+        img.kelvin(),
+        img.width(),
+        img.height(),
+        &InspectSettings { min_delta: 2.0, ..Default::default() },
+    );
+    assert!(!findings.is_empty(), "the E40 scene has a warm object");
     let ax8 = sample("FLIR_AX8.jpg");
-    let items = [
-        ReportImage {
-            image: &img,
-            palette: palette::by_id("iron").unwrap(),
-            range,
-            measurements,
-            notes: "Recomputed with emissivity 0.80.".into(),
+    let t640 = sample("FLIR_T640.jpg");
+    let t640_look = Look {
+        palette: palette::Palette {
+            id: "camera".into(),
+            name: "Camera palette".into(),
+            colors: t640.embedded_palette().unwrap().to_vec(),
         },
-        ReportImage {
-            image: &ax8,
-            palette: palette::by_id("rainbow").unwrap(),
-            range: ax8.range().unwrap(),
-            measurements: ax8.embedded_measurements().to_vec(),
-            notes: String::new(),
-        },
-    ];
-    let pdf = report::pdf(&info, &items, "Kelvinlens test").expect("report renders");
-    assert!(pdf.starts_with(b"%PDF-"), "not a PDF");
-    assert!(pdf.len() > 20_000, "suspiciously small PDF: {} bytes", pdf.len());
-    if let Ok(dir) = std::env::var("KELVINLENS_REPORT_OUT") {
-        std::fs::write(PathBuf::from(dir).join("golden-report.pdf"), &pdf).unwrap();
+        distribution: Distribution::Detail,
+        ..look(&t640, "iron")
+    };
+
+    for template in report::builtin_templates() {
+        for format in [ReportFormat::Pdf, ReportFormat::Html] {
+            let info = ReportInfo {
+                title: format!("Golden test report ({})", template.name),
+                site: "Test bench".into(),
+                inspector: "CI".into(),
+                date: "2026-10-19".into(),
+                summary: "Automated check that report generation works.".into(),
+                include_photos: true,
+                fields: BTreeMap::from([("Customer".to_string(), "ACME".to_string())]),
+                conditions: report::Conditions {
+                    inside_k: Some(293.15),
+                    outside_k: Some(273.15),
+                    humidity: Some(0.5),
+                    ambient_k: Some(288.15),
+                    ..Default::default()
+                },
+                template: Some(template.clone()),
+                format,
+                ..Default::default()
+            };
+            let items = [
+                ReportImage {
+                    formulas: vec![
+                        Formula {
+                            label: "Rise".into(),
+                            expression: "Bx1.max - Sp1".into(),
+                            kind: ResultKind::Difference,
+                        },
+                        Formula { label: "Broken".into(), expression: "Nope + 1".into(), kind: ResultKind::Number },
+                    ],
+                    annotations: vec![
+                        Annotation::Text { x: 30.0, y: 90.0, text: "Check fixing".into() },
+                        Annotation::Sketch {
+                            points: vec![[10.0, 10.0], [30.0, 20.0], [50.0, 12.0]],
+                            color: [255, 255, 0],
+                        },
+                    ],
+                    findings: findings.clone(),
+                    fields: BTreeMap::from([("Component".to_string(), "Mug".to_string())]),
+                    asset: "Kitchen".into(),
+                    presentation: Presentation { rotation: 90.0, crop: Some([10.0, 5.0, 140.0, 110.0]) },
+                    ..ReportImage::basic(
+                        &img,
+                        Look { isotherms: isotherms.clone(), ..look(&img, "iron") },
+                        measurements.clone(),
+                        "Recomputed with emissivity 0.80.".into(),
+                    )
+                },
+                ReportImage {
+                    asset: "Kitchen".into(),
+                    ..ReportImage::basic(
+                        &ax8,
+                        look(&ax8, "rainbow"),
+                        ax8.embedded_measurements().to_vec(),
+                        String::new(),
+                    )
+                },
+                ReportImage {
+                    presentation: Presentation { rotation: 17.0, crop: None },
+                    ..ReportImage::basic(
+                        &t640,
+                        t640_look.clone(),
+                        vec![
+                            Measurement::new("Supply 1", Shape::Spot { x: 320.5, y: 240.5 }),
+                            Measurement::new("Return 1", Shape::Box { x: 10.0, y: 10.0, w: 50.0, h: 40.0 }),
+                        ],
+                        String::new(),
+                    )
+                },
+            ];
+            let out = report::generate(&info, &items, "Kelvinlens test")
+                .unwrap_or_else(|e| panic!("{} {format:?}: {e}", template.id));
+            match format {
+                ReportFormat::Pdf => {
+                    assert!(out.starts_with(b"%PDF-"), "not a PDF");
+                    assert!(out.len() > 20_000, "suspiciously small PDF: {} bytes", out.len());
+                }
+                ReportFormat::Html => {
+                    let html = String::from_utf8(out.clone()).unwrap();
+                    assert!(html.starts_with("<!doctype html>") && html.ends_with("</html>\n"));
+                    assert!(html.contains("Golden test report") && html.contains("data:image/png;base64,"));
+                    assert!(!html.contains("<script"), "reports must not contain scripts");
+                    if template.kind == TemplateKind::Electrical {
+                        assert!(html.contains("Temperature rise (NETA)"));
+                    }
+                    if template.kind == TemplateKind::Building {
+                        assert!(html.contains("Thermal index") && html.contains("Dew point"));
+                    }
+                    if template.kind == TemplateKind::Hvac {
+                        assert!(html.contains("Split (return − supply)"));
+                    }
+                    if template.sections.trends {
+                        assert!(html.contains("Trend: Kitchen"));
+                    }
+                }
+            }
+            if let Ok(dir) = std::env::var("KELVINLENS_REPORT_OUT") {
+                let ext = if format == ReportFormat::Pdf { "pdf" } else { "html" };
+                std::fs::write(PathBuf::from(dir).join(format!("golden-{}.{ext}", template.id)), &out).unwrap();
+            }
+        }
     }
 }
 
@@ -195,4 +317,148 @@ fn sidecar_edits_apply_to_a_real_image() {
     let edits = sidecar::Sidecar { params: Some(changed()), ..Default::default() };
     img.set_params(edits.params.as_ref().unwrap()).unwrap();
     close(c(&img, 80, 60), 18.86, 0.02, "E40 centre after sidecar params");
+}
+
+#[test]
+fn more_cameras_match_independent_model() {
+    // DJI Zenmuse XT2 and XTR record FLIR data; the T640 and the portrait sample have palettes.
+    for (name, w, h, centre, min, max) in [
+        ("DJI_XT2.jpg", 640, 512, 34.47, 21.46, 82.92),
+        ("DJI_XTR.jpg", 640, 512, 25.80, 15.93, 59.73),
+        ("FLIR_T640.jpg", 640, 480, 34.45, 25.46, 97.85),
+        ("FLIR.jpg", 240, 320, 30.50, 25.95, 62.32),
+    ] {
+        let img = sample(name);
+        assert_eq!((img.width(), img.height()), (w, h), "{name}");
+        close(c(&img, w / 2, h / 2), centre, 0.02, name);
+        let (lo, hi, _) = whole(&img);
+        close(lo, min, 0.02, name);
+        close(hi, max, 0.02, name);
+    }
+    let t640 = sample("FLIR_T640.jpg");
+    assert_eq!(t640.embedded_palette().map(|p| p.len()), Some(256));
+    assert!(t640.camera().lens.is_some() && t640.camera().field_of_view.is_some(), "{:?}", t640.camera());
+    let xt2 = sample("DJI_XT2.jpg");
+    let g = xt2.camera().gimbal.expect("XT2 gimbal from DJI XMP");
+    close(g[2], 82.4, 0.01, "gimbal yaw");
+    assert_eq!(xt2.camera().relative_altitude, Some(1.9));
+}
+
+#[test]
+fn radiometric_video_frames_match_independent_decoding() {
+    let seq = Video::open(&path("SampleSEQ.seq")).unwrap();
+    let info = seq.info();
+    assert_eq!((info.frames, info.width, info.height, info.compressed), (2, 640, 480, false));
+    // ExifTool: frame times 14:52:08.699 and 14:52:12.666.
+    close(info.times[1] as f32, 3.967, 0.001, "SEQ frame 2 time");
+    let f0 = seq.frame(0, None).unwrap();
+    close(c(&f0, 320, 240), 22.364, 0.002, "SEQ frame 1 centre");
+    let (lo, hi, _) = whole(&f0);
+    close(lo, 18.60, 0.01, "SEQ min");
+    close(hi, 38.27, 0.01, "SEQ max");
+    assert_eq!(f0.camera().date_time.as_deref(), Some("2012-06-13 14:52:08.699-05:00"));
+
+    let csq = Video::open(&path("SampleCSQ.csq")).unwrap();
+    let info = csq.info();
+    assert_eq!((info.width, info.height, info.compressed), (1024, 768, true));
+    assert_eq!(info.frames, 8, "including the last frame, which is cut short by 4 bytes");
+    let f0 = csq.frame(0, None).unwrap();
+    close(c(&f0, 512, 384), 31.276, 0.002, "CSQ frame 1 centre");
+    let (lo, hi, _) = whole(&f0);
+    close(lo, 16.69, 0.01, "CSQ min");
+    close(hi, 35.29, 0.01, "CSQ max");
+    // Every frame decodes; neighbours differ (the scene moves).
+    let centres: Vec<f32> = (0..info.frames).map(|i| c(&csq.frame(i, None).unwrap(), 512, 384)).collect();
+    assert!(centres.iter().all(|v| v.is_finite() && *v > 20.0 && *v < 40.0), "{centres:?}");
+    assert_ne!(centres[0], centres[1]);
+
+    // Parameters apply to every frame; segments round-trip through SEQ.
+    let p = Params { emissivity: Some(0.8), ..Default::default() };
+    let changed = csq.frame(3, Some(&p)).unwrap();
+    assert!(c(&changed, 512, 384) > centres[3]);
+    let out = std::env::temp_dir().join(format!("kelvinlens-seg-{}.seq", std::process::id()));
+    assert_eq!(csq.write_segment(2, 4, &out).unwrap(), 3);
+    let seg = Video::open(&out).unwrap();
+    assert_eq!(seg.len(), 3);
+    assert_eq!(seg.frame(1, None).unwrap().kelvin(), csq.frame(3, None).unwrap().kelvin());
+    std::fs::remove_file(&out).unwrap();
+}
+
+#[test]
+fn flir_copy_with_new_parameters_recomputes_identically() {
+    let original = std::fs::read(path("FLIR_E40.jpg")).unwrap();
+    let copy = fff::rewrite_jpeg_params(&original, &changed()).unwrap();
+    assert_eq!(copy.len(), original.len());
+    let out = std::env::temp_dir().join(format!("kelvinlens-e40-{}.jpg", std::process::id()));
+    std::fs::write(&out, &copy).unwrap();
+    let reopened = ThermalImage::open(&out).unwrap();
+    std::fs::remove_file(&out).unwrap();
+    let p = reopened.file_params();
+    close(p.emissivity.unwrap(), 0.80, 1e-6, "emissivity in copy");
+    close(p.humidity.unwrap(), 0.80, 1e-6, "humidity in copy");
+    close(p.distance_m.unwrap(), 10.0, 1e-6, "distance in copy");
+    // Same temperatures as recomputing the original in the app.
+    close(c(&reopened, 80, 60), 18.86, 0.02, "E40 copy centre");
+    let mut recomputed = sample("FLIR_E40.jpg");
+    recomputed.set_params(&changed()).unwrap();
+    assert_eq!(reopened.kelvin(), recomputed.kelvin());
+}
+
+#[test]
+fn panorama_of_overlapping_crops_rebuilds_the_scene() {
+    let img = sample("FLIR_T640.jpg");
+    let (w, k) = (img.width(), img.kelvin());
+    let crop = |x0: usize, y0: usize, cw: usize, ch: usize| -> Vec<f32> {
+        (0..ch).flat_map(|y| (0..cw).map(move |x| k[(y0 + y) * w + x0 + x])).collect()
+    };
+    let (a, b, cc) = (crop(0, 40, 300, 360), crop(210, 70, 300, 360), crop(330, 20, 300, 360));
+    let tiles = [
+        panorama::Tile { kelvin: &a, width: 300, height: 360 },
+        panorama::Tile { kelvin: &b, width: 300, height: 360 },
+        panorama::Tile { kelvin: &cc, width: 300, height: 360 },
+    ];
+    let s = panorama::stitch(&tiles, &[], &Default::default()).unwrap();
+    assert_eq!(s.offsets, vec![[0, 20], [210, 50], [330, 0]]);
+    for y in 0..s.height {
+        for x in 0..s.width {
+            let v = s.kelvin[y * s.width + x];
+            if v.is_finite() {
+                assert!((v - k[(y + 20) * w + x]).abs() < 1e-3);
+            }
+        }
+    }
+    let pano = ThermalImage::from_kelvin(
+        &PathBuf::from("pano.tiff"),
+        Format::Panorama,
+        s.kelvin.clone(),
+        s.width,
+        s.height,
+        Default::default(),
+    )
+    .unwrap();
+    // Saved as a radiometric TIFF it opens again with the same temperatures.
+    let tiff = export::thermal_tiff(pano.kelvin(), pano.width(), pano.height()).unwrap();
+    let out = std::env::temp_dir().join(format!("kelvinlens-pano-{}.tiff", std::process::id()));
+    std::fs::write(&out, tiff).unwrap();
+    let back = ThermalImage::open(&out).unwrap();
+    std::fs::remove_file(&out).unwrap();
+    assert_eq!((back.width(), back.height()), (s.width, s.height));
+    assert!(back.kelvin().iter().zip(pano.kelvin()).all(|(a, b)| a == b || (a.is_nan() && b.is_nan())));
+}
+
+#[test]
+fn auto_inspect_finds_the_hottest_spot_of_a_real_image() {
+    let img = sample("FLIR_T640.jpg");
+    let f = analysis::inspect(
+        img.kelvin(),
+        img.width(),
+        img.height(),
+        &InspectSettings { min_delta: 10.0, ..Default::default() },
+    );
+    assert!(!f.is_empty());
+    let (_, max, _) = whole(&img);
+    // The top finding contains the image's hottest pixel.
+    let hottest = f.iter().map(|f| f.extreme_k).fold(f32::MIN, f32::max);
+    close(hottest - 273.15, max, 0.001, "hottest finding");
+    assert!(f.iter().all(|f| f.delta_k >= 10.0));
 }

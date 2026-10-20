@@ -2656,7 +2656,7 @@ dependencies = [
 
 [[package]]
 name = "kelvinlens"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "kelvinlens-core",
  "serde",
@@ -2668,12 +2668,14 @@ dependencies = [
 
 [[package]]
 name = "kelvinlens-core"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "image",
  "libblackbody",
+ "pure_jpegls",
  "serde",
  "serde_json",
+ "tiff",
  "typst",
  "typst-as-lib",
  "typst-pdf",
@@ -3776,6 +3778,15 @@ checksum = "4dcd034599e63b970727f70d79e02d62390a4a84f7c6b827c27c46d5ac3fa622"
 dependencies = [
  "ar_archive_writer",
  "cc",
+]
+
+[[package]]
+name = "pure_jpegls"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "480f6d9c01d5eb952d227ef21e7e1395ae6332df183f70d532ea8dd18d0850fa"
+dependencies = [
+ "thiserror 2.0.21",
 ]
 
 [[package]]
