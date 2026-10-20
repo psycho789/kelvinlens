@@ -3,6 +3,8 @@
 # They are only downloaded for testing, never shipped:
 # - Images: MIT-licensed, from https://github.com/SanNianYiSi/thermal_parser (pinned commit).
 # - Videos: from the Thermimage R package, https://github.com/gtatters/Thermimage (pinned commit).
+# - InfiRay P2 Pro: the two sample photos attached to https://github.com/exiftool/exiftool/pull/184.
+#   They carry no licence, so they are only fetched for the tests and never committed.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 IMAGES="https://raw.githubusercontent.com/SanNianYiSi/thermal_parser/b513647ef2318ba99dd2e2a543fa0fb071fd9579/images"
@@ -14,6 +16,8 @@ while read -r base sha name; do
     case "$base" in
       images) url="$IMAGES/$name" ;;
       videos) url="$VIDEOS/$name" ;;
+      p2pro-a) url="https://user-images.githubusercontent.com/515068/217523173-9b2b7c4d-6d69-45f3-9319-764a358d21cb.jpg" ;;
+      p2pro-b) url="https://user-images.githubusercontent.com/515068/217523370-b85d3ae8-d4f6-49e2-bf9e-eb09e066c979.jpg" ;;
     esac
     curl -fsSL --retry 3 -o "$file" "$url"
   fi
@@ -35,4 +39,6 @@ images efdbc4e51a87a5f38943055fcd04dfb2bdd97ef549b1cdef034c0d7f5b1e6eaa DJI_XT2.
 images c2ae58509119695cea72c27a344569e6e53196e968e5e091671e8f7d1813a74f DJI_XTR.jpg
 videos abbcc3070b158d630fd737c2be2a7129dba89540284173b569f7ab1876a05de9 SampleSEQ.seq
 videos 7c8505a40790615bb67bc264c45366bb9e8b3e94bd74b217e4b06c6ea8146151 SampleCSQ.csq
+p2pro-a 1bfdd69109cb29457c805181341987651185bc6c7912185f3b31d85ba26fc091 P2Pro_a.jpg
+p2pro-b 7b52f052defc8f3a9cd0b319a21a3add9efa088a863a1509a4d52b3a87037a8c P2Pro_b.jpg
 LIST

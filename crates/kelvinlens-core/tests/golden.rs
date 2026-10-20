@@ -462,3 +462,58 @@ fn auto_inspect_finds_the_hottest_spot_of_a_real_image() {
     close(hottest - 273.15, max, 0.001, "hottest finding");
     assert!(f.iter().all(|f| f.delta_k >= 10.0));
 }
+
+/// InfiRay P2 Pro photos. "Camera" values are the readings the P2 Pro app printed on each photo;
+/// "reference" values come from an independent Python decode (exiftool -ImagingData + numpy,
+/// temperatures as u16/64 K, turned clockwise to match the upright picture).
+#[test]
+fn p2_pro_matches_camera_readings() {
+    for (name, centre, max, max_at, reference_max, reference_avg) in [
+        // Photo a: the camera showed centre 23.4 °C and max 34.3 °C at picture pixel (416, 656).
+        ("P2Pro_a.jpg", 23.4, Some(34.3), (110.9, 174.9), 34.288, 21.85),
+        // Photo b: centre 22.1 °C; its printed max (36.1 °C) differs from the stored data
+        // (36.54 °C) at the same spot, so only the position is checked against the camera.
+        ("P2Pro_b.jpg", 22.1, None, (150.1, 221.6), 36.538, 23.303),
+    ] {
+        let img = sample(name);
+        assert_eq!((img.format(), img.width(), img.height()), (Format::InfiRay, 192, 256), "{name}");
+        assert_eq!(img.camera().description.as_deref(), Some("Infisense P2_USB_IR"));
+        assert_eq!(img.camera().serial_number.as_deref(), Some("P200019B15656148"));
+
+        let spot = &img.embedded_measurements()[0];
+        assert_eq!(spot.label, "Centre");
+        let s = measure::stats(img.kelvin(), img.width(), img.height(), &spot.shape).unwrap();
+        close(s.avg - 273.15, centre, 0.05, &format!("{name} centre"));
+
+        let (_, hottest, avg) = whole(&img);
+        close(hottest, reference_max, 0.002, &format!("{name} max vs reference"));
+        close(avg, reference_avg, 0.01, &format!("{name} mean vs reference"));
+        if let Some(max) = max {
+            close(hottest, max, 0.05, &format!("{name} max vs camera"));
+        }
+        // The hottest pixel is where the camera put its max marker (picture is 3.75× larger).
+        let i = img.kelvin().iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).unwrap().0;
+        let (x, y) = ((i % img.width()) as f32 + 0.5, (i / img.width()) as f32 + 0.5);
+        assert!((x - max_at.0).abs() < 2.0 && (y - max_at.1).abs() < 2.0, "{name}: max at ({x}, {y})");
+    }
+}
+
+#[test]
+fn p2_pro_parameters_are_read_and_can_be_changed() {
+    let mut img = sample("P2Pro_a.jpg");
+    let p = img.file_params();
+    close(p.emissivity.unwrap(), 0.99, 1e-6, "emissivity");
+    close(p.reflected_k.unwrap() - 273.15, 25.0, 1e-4, "reflected");
+    close(p.atmosphere_k.unwrap() - 273.15, 25.0, 1e-4, "environment");
+    close(p.distance_m.unwrap(), 0.25, 1e-6, "distance");
+    close(p.humidity.unwrap(), 0.5, 1e-6, "humidity");
+    assert_eq!(img.editable(), vec![kelvinlens_core::Param::Emissivity, kelvinlens_core::Param::ReflectedK]);
+
+    let before = img.kelvin().to_vec();
+    img.set_params(&Params { emissivity: Some(0.80), reflected_k: Some(30.0 + 273.15), ..Default::default() }).unwrap();
+    let (_, hottest, _) = whole(&img);
+    // Reference: the same T⁴ correction computed independently in Python.
+    close(hottest, 35.222, 0.01, "max with ε 0.80, reflected 30 °C");
+    img.reset_params().unwrap();
+    assert!(img.kelvin().iter().zip(&before).all(|(a, b)| (a - b).abs() < 1e-3));
+}

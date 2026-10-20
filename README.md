@@ -12,11 +12,15 @@ network access and never uploads your images.
 - FLIR radiometric JPEGs (including DJI Zenmuse XT2/XTR) and **FLIR radiometric video** (`.seq`,
   `.csq`), Fluke `.is2`, InfiRay/Topdon `.irg`, HTI/ToolTop, and 16-bit PNG or 32-bit TIFF
   thermograms (decoding by [libblackbody](https://crates.io/crates/libblackbody)).
+- **InfiRay P2 Pro** photos saved by its phone app: temperatures, capture settings, serial number
+  and the camera's centre reading, turned to match how the photo was taken.
 - Lens, field of view, GPS, altitude, heading and drone gimbal angles where the file records them.
 
 **Temperatures**
 - Recalculates every pixel when you change emissivity, reflected temperature, distance,
   humidity, air temperature or IR-window settings (FLIR raw data; Fluke correction model).
+  For P2 Pro photos, emissivity and reflected temperature can be changed using the same correction
+  as Fluke; this is an approximation of what the camera would compute.
 - Saves a **copy of a FLIR JPEG with the new parameters written in**, which FLIR software reads too.
 
 **Measurements and analysis**

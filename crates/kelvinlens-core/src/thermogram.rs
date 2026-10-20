@@ -8,6 +8,7 @@ use serde::Serialize;
 use uom::si::thermodynamic_temperature::kelvin as K;
 
 use crate::fff;
+use crate::infiray;
 use crate::measure::{Measurement, Shape};
 use crate::palette;
 use crate::params::{Param, Params};
@@ -20,6 +21,8 @@ pub enum Format {
     Fluke,
     Hti,
     Irg,
+    /// InfiRay IJPEG, as saved by the P2 Pro app.
+    InfiRay,
     Png,
     Tiff,
     /// A frame of a FLIR SEQ or CSQ radiometric video.
@@ -35,6 +38,7 @@ impl Format {
             Format::Fluke => "Fluke IS2",
             Format::Hti => "HTI / ToolTop",
             Format::Irg => "InfiRay IRG",
+            Format::InfiRay => "InfiRay P2 Pro JPEG",
             Format::Png => "16-bit PNG (centikelvin)",
             Format::Tiff => "TIFF",
             Format::Video => "FLIR radiometric video",
@@ -98,6 +102,9 @@ enum Model {
     /// Fluke: serendip's correction `T⁴ = (Tapp⁴ − (1 − ε)·Tbg⁴) / (τ·ε)`, kept as the apparent
     /// `Tapp⁴` per pixel so new parameters can be applied exactly.
     Fluke { apparent4: Vec<f32> },
+    /// InfiRay P2 Pro: the camera's own model is unknown, so the same `T⁴` correction as Fluke is
+    /// applied to its stored temperatures. An approximation, without window transmission.
+    InfiRay { apparent4: Vec<f32> },
     /// Formats that only store final temperatures.
     Fixed,
 }
@@ -123,6 +130,9 @@ pub struct ThermalImage {
 impl ThermalImage {
     pub fn open(path: &Path) -> Result<ThermalImage> {
         let bytes = std::fs::read(path).map_err(|e| Error::Open(e.to_string()))?;
+        if infiray::is_ijpeg(&bytes) {
+            return Self::from_infiray(path, &bytes);
+        }
         let thermogram = Thermogram::from_bytes(&bytes).map_err(|e| Error::Open(e.to_string()))?;
         let mut image = Self::from_thermogram(path, thermogram);
         if image.format == Format::Flir {
@@ -134,8 +144,52 @@ impl ThermalImage {
     /// Temperatures and parameters only, without decoding the photo: for scanning many files.
     pub fn open_temperatures(path: &Path) -> Result<ThermalImage> {
         let bytes = std::fs::read(path).map_err(|e| Error::Open(e.to_string()))?;
+        if infiray::is_ijpeg(&bytes) {
+            return Self::from_infiray(path, &bytes);
+        }
         let thermogram = Thermogram::from_bytes(&bytes).map_err(|e| Error::Open(e.to_string()))?;
         Ok(Self::build(path, thermogram, false))
+    }
+
+    /// An InfiRay IJPEG (P2 Pro). It has no visible-light photo: the saved picture is the
+    /// camera's own palette rendering, so it is used only to orient the temperatures.
+    fn from_infiray(path: &Path, bytes: &[u8]) -> Result<ThermalImage> {
+        let j = infiray::decode(bytes).ok_or_else(|| Error::Open("unreadable InfiRay thermal data".into()))?;
+        let description = match (&j.make, &j.model) {
+            (Some(make), Some(model)) => Some(format!("{make} {model}")),
+            (make, model) => make.clone().or_else(|| model.clone()),
+        };
+        let camera = Camera {
+            description,
+            serial_number: j.serial_number.clone(),
+            date_time: j.date_time.as_deref().map(exif_date),
+            focal_length: j.focal_length,
+            ..Default::default()
+        };
+        let mut embedded_measurements = Vec::new();
+        if j.show_centre {
+            // The camera reads the pixel just up and left of the middle (matches both samples).
+            let shape = Shape::Spot { x: j.width as f32 / 2.0 - 0.5, y: j.height as f32 / 2.0 - 0.5 };
+            embedded_measurements.push(Measurement::new("Centre", shape));
+        }
+        let embedded_palette = (j.palette == Some(3)).then(|| palette::by_id("iron")).flatten().map(|p| p.colors);
+        let apparent4 = fluke_apparent4(&j.kelvin, &j.params);
+        Ok(ThermalImage {
+            path: path.to_path_buf(),
+            format: Format::InfiRay,
+            width: j.width,
+            height: j.height,
+            kelvin: j.kelvin,
+            model: Model::InfiRay { apparent4 },
+            file_params: j.params,
+            params: j.params,
+            camera,
+            embedded_measurements,
+            embedded_range: None,
+            embedded_palette,
+            photo: None,
+            pip: None,
+        })
     }
 
     /// One frame of a FLIR video: an FFF block with uncompressed raw data.
@@ -328,6 +382,7 @@ impl ThermalImage {
         match self.model {
             Model::Flir(_) => Param::ALL.to_vec(),
             Model::Fluke { .. } => vec![Param::Emissivity, Param::ReflectedK, Param::WindowTransmission],
+            Model::InfiRay { .. } => vec![Param::Emissivity, Param::ReflectedK],
             Model::Fixed => Vec::new(),
         }
     }
@@ -365,7 +420,7 @@ impl ThermalImage {
                 // Non-physical results (negative radiance) come out as NaN or ±inf; keep NaN only.
                 self.kelvin = kelvin.into_iter().map(|v| if v.is_finite() { v } else { f32::NAN }).collect();
             }
-            Model::Fluke { apparent4 } => {
+            Model::Fluke { apparent4 } | Model::InfiRay { apparent4 } => {
                 self.kelvin = fluke_object_kelvin(apparent4, &merged);
             }
             Model::Fixed => unreachable!("checked above"),

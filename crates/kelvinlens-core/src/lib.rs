@@ -13,6 +13,7 @@ pub mod fff;
 pub mod folder;
 pub mod formula;
 pub mod geo;
+pub mod infiray;
 pub mod measure;
 pub mod palette;
 pub mod panorama;

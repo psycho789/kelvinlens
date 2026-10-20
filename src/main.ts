@@ -164,7 +164,7 @@ app.append(
       h("h1", {}, "Open a thermal image"),
       h("p", {}, "Drop files or a folder here, or use Open. Everything stays on this computer."),
       h("div", { class: "row buttons" }, h("button", { class: "primary", id: "empty-open" }, "Open images…"), h("button", { id: "empty-folder" }, "Open folder…")),
-      h("p", { class: "muted small" }, "FLIR radiometric JPEG and SEQ/CSQ video · DJI Zenmuse XT2/XTR · Fluke IS2 · InfiRay/Topdon IRG · HTI · 16-bit PNG and TIFF"),
+      h("p", { class: "muted small" }, "FLIR radiometric JPEG and SEQ/CSQ video · DJI Zenmuse XT2/XTR · Fluke IS2 · InfiRay P2 Pro JPEG · InfiRay/Topdon IRG · HTI · 16-bit PNG and TIFF"),
     ),
     h("div", { id: "drop", class: "drop-overlay" }, h("div", {}, "Drop to open")),
     h("div", { id: "tool-hint", class: "tool-hint", hidden: true }),
