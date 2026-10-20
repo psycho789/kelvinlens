@@ -56,6 +56,27 @@ network access and never uploads your images.
 - Edits are saved next to each image (`<file>.kelvinlens.json`); originals are never changed.
 - °C, °F or K. Entirely offline.
 
+### Free here, paid elsewhere
+
+Kelvinlens 0.2.0 added features that FLIR Thermal Studio only includes in its paid yearly
+subscriptions (Standard or Pro; the Starter edition is free):
+
+| Feature in Kelvinlens | FLIR Thermal Studio edition |
+|---|---|
+| Polygon, polyline and magic wand tools; temperature profiles | Pro |
+| Formulas over measurement results, trends across visits | Pro |
+| Batch processing with every image and measurement control | Pro (Standard: basic batch only) |
+| Your own report templates, with no limit, and your company logo | Pro (Standard: up to five templates) |
+| Video analysis: cutting, segments, measurements over time | Pro (Standard: playback) |
+| AVI video export | Pro |
+| Free rotation | Pro (others: 90° steps) |
+| Detail-enhanced colour distribution (like FLIR's Digital Detail Enhancement) | Standard and Pro |
+
+Editions as listed in October 2026 on FLIR's
+[Thermal Studio Suite page](https://www.flir.com/products/flir-thermal-studio-suite/) and by the
+resellers [I-care](https://shop.icareweb.com/product/flir-thermal-studio-software/) and
+[4Test](https://www.4test.no/FLIR-Thermal-Studio.htm). FLIR can change what each edition includes.
+
 ## Download
 
 Get the installer for your system from the
