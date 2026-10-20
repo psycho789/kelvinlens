@@ -4,16 +4,14 @@
 
 use std::fmt::Write as _;
 
-use crate::analysis::SeverityLevel;
+use crate::analysis::{SEVERITY_COLORS, SeverityLevel};
 use crate::measure::Shape;
 use crate::report::{Chart, ImageSection, Prepared, PreparedImage, base64_encode};
 use crate::sidecar::Annotation;
 use crate::xml::escape as esc;
 
-const SEVERITY: [&str; 4] = ["#64748b", "#ca8a04", "#ea580c", "#dc2626"];
-
 fn severity_color(level: SeverityLevel) -> &'static str {
-    SEVERITY[level as usize - 1]
+    SEVERITY_COLORS[level as usize - 1]
 }
 
 fn table(head: &[&str], rows: &[Vec<String>]) -> String {
@@ -259,6 +257,7 @@ fn image_html(o: &mut String, p: &Prepared, img: &PreparedImage) {
     o.push_str("</section>");
 }
 
+// Overlay drawing is implemented three times (Typst, SVG, canvas); change shapes in all three. See sprint-outline 3.3.
 /// The thermal image with overlays, cropped and rotated like the PDF.
 fn thermal_svg(img: &PreparedImage) -> String {
     let [cx, cy, cw, ch] = img.crop;

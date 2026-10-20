@@ -17,6 +17,7 @@ export interface ChartOptions {
   dots?: boolean;
 }
 
+// UI palette for the dark theme. Reports use the saturated print palette in crates/kelvinlens-core/src/report/prepare.rs SERIES_COLORS; keep the order.
 export const SERIES_COLORS = ["#f87171", "#60a5fa", "#4ade80", "#c084fc", "#fb923c", "#22d3ee", "#f472b6", "#a3e635"];
 
 /** A chart element sized to its container; redraws when resized. */

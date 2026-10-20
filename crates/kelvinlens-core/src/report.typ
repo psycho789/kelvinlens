@@ -4,6 +4,7 @@
 #let muted = luma(105)
 // Header row with bold labels.
 #let head(..cells) = table.header(..cells.pos().map(strong))
+// Same colours as analysis.rs SEVERITY_COLORS and src/overlays.ts SEVERITY (checked by a Rust test).
 #let severity-colors = (rgb("#64748b"), rgb("#ca8a04"), rgb("#ea580c"), rgb("#dc2626"))
 #let severity-color(level) = severity-colors.at(calc.clamp(level, 1, 4) - 1)
 #let swatch(fill) = box(width: 7pt, height: 7pt, radius: 1pt, fill: fill, baseline: 0.5pt)
@@ -109,6 +110,7 @@
 )
 
 // The thermal image at `s` length per pixel, with measurements, findings and annotations.
+// Overlay drawing is implemented three times (Typst, SVG, canvas); change shapes in all three. See sprint-outline 3.3.
 #let overlays(img, s) = box(width: img.width * s, height: img.height * s, {
   place(top + left, image(img.thermal, width: img.width * s, height: img.height * s, scaling: "pixelated"))
   let outline = 1.8pt + black.transparentize(45%)

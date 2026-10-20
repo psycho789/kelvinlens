@@ -186,6 +186,11 @@ impl Default for InspectSettings {
     }
 }
 
+/// Severity colours, index = level - 1 (Low, Moderate, High, Severe). The same four values are
+/// in `report.typ` (`severity-colors`) and `src/overlays.ts` (`SEVERITY`); the test
+/// `severity_colors_match_typst_and_ui` fails when they differ. Change all three together.
+pub const SEVERITY_COLORS: [&str; 4] = ["#64748b", "#ca8a04", "#ea580c", "#dc2626"];
+
 /// How serious a finding is. On the wire and in sidecars it is the number 1 (least) to 4 (most
 /// severe); out-of-range numbers are clamped on load.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -393,6 +398,20 @@ fn components(mask: &[bool], width: usize, height: usize) -> Vec<Vec<[usize; 2]>
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn severity_colors_match_typst_and_ui() {
+        let typst = include_str!("report.typ");
+        let ui = include_str!("../../../src/overlays.ts");
+        let list = SEVERITY_COLORS.map(|c| format!("\"{c}\""));
+        for c in &list {
+            assert!(typst.contains(&format!("rgb({c})")), "report.typ lacks {c}");
+            assert!(ui.contains(c.as_str()), "overlays.ts lacks {c}");
+        }
+        // order matters: the four appear in sequence on one line in each file
+        let joined = list.join(", ");
+        assert!(ui.contains(&format!("[{joined}]")), "overlays.ts SEVERITY order differs");
+    }
     use super::*;
 
     const C: f32 = 273.15;

@@ -14,6 +14,7 @@ export interface OverlayStyle {
 }
 
 export const ACCENT = "#38bdf8";
+// Same colours as crates/kelvinlens-core/src/analysis.rs SEVERITY_COLORS and report.typ severity-colors (checked by a Rust test).
 const SEVERITY = ["#64748b", "#ca8a04", "#ea580c", "#dc2626"];
 
 export function severityColor(level: SeverityLevel): string {
@@ -173,6 +174,7 @@ export function drawMeasurements(ctx: CanvasRenderingContext2D, measurements: Me
   });
 }
 
+// Overlay drawing is implemented three times (Typst, SVG, canvas); change shapes in all three. See sprint-outline 3.3.
 export function drawFindings(ctx: CanvasRenderingContext2D, findings: Finding[], toPx: ToPx, style: OverlayStyle): void {
   const s = style.scale;
   for (const f of findings) {

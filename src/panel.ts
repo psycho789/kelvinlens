@@ -168,6 +168,7 @@ function section(id: string, title: string, body: Node, extra?: Node): HTMLEleme
   return h("section", { class: "panel-section", id: `section-${id}` }, h("header", {}, h("h2", {}, title), extra ?? null), body);
 }
 
+// Text must match crates/kelvinlens-core/src/report/prepare.rs isotherm_text (not shared; see sprint-outline 3.3).
 export function isothermText(i: IsothermKind, unit: Unit): string {
   switch (i.kind) {
     case "above":
