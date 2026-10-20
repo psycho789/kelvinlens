@@ -1,6 +1,6 @@
 // Drawing measurement tools, findings and annotations over a thermal image. Shapes follow the
 // view's rotation; labels stay upright. Used by the viewer and by image export.
-import type { Annotation, Finding, Measurement, Pt, Shape } from "./api";
+import type { Annotation, Finding, Measurement, Pt, SeverityLevel, Shape } from "./api";
 
 export interface OverlayStyle {
   /** Device pixels per CSS pixel (or the export's scale). */
@@ -16,7 +16,7 @@ export interface OverlayStyle {
 export const ACCENT = "#38bdf8";
 const SEVERITY = ["#64748b", "#ca8a04", "#ea580c", "#dc2626"];
 
-export function severityColor(level: number): string {
+export function severityColor(level: SeverityLevel): string {
   return SEVERITY[Math.min(4, Math.max(1, level)) - 1]!;
 }
 

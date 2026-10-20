@@ -7,6 +7,8 @@
 
 use serde::Serialize;
 
+use crate::{Error, Result};
+
 /// Largest stitched canvas, in pixels (width × height); larger results are refused.
 const MAX_CANVAS_PIXELS: usize = 40_000_000;
 
@@ -208,9 +210,9 @@ fn half(k: &[f32], w: usize, h: usize) -> (Vec<f32>, usize, usize) {
 /// Stitches `tiles` in order. `offsets` gives fixed positions (top-left, pixels, relative to the
 /// first tile) for tiles the user placed; `None` entries are found automatically from the tile
 /// before. Errors when an automatic tile has no usable overlap with its predecessor.
-pub fn stitch(tiles: &[Tile], offsets: &[Option<[i64; 2]>]) -> Result<Stitched, String> {
+pub fn stitch(tiles: &[Tile], offsets: &[Option<[i64; 2]>]) -> Result<Stitched> {
     if tiles.len() < 2 {
-        return Err("A panorama needs at least two images".into());
+        return Err(Error::Panorama("A panorama needs at least two images".into()));
     }
     let mut placed: Vec<[i64; 2]> = vec![[0, 0]];
     let mut scores = vec![1.0];
@@ -221,8 +223,9 @@ pub fn stitch(tiles: &[Tile], offsets: &[Option<[i64; 2]>]) -> Result<Stitched, 
                 scores.push(f32::NAN);
             }
             None => {
-                let (rel, score) = align(&tiles[i - 1], &tiles[i])
-                    .ok_or_else(|| format!("Image {} does not overlap image {} enough to align", i + 1, i))?;
+                let (rel, score) = align(&tiles[i - 1], &tiles[i]).ok_or_else(|| {
+                    Error::Panorama(format!("Image {} does not overlap image {} enough to align", i + 1, i))
+                })?;
                 let prev = placed[i - 1];
                 placed.push([prev[0] + rel[0], prev[1] + rel[1]]);
                 scores.push(score);
@@ -235,7 +238,7 @@ pub fn stitch(tiles: &[Tile], offsets: &[Option<[i64; 2]>]) -> Result<Stitched, 
     let width = tiles.iter().zip(&offsets).map(|(t, o)| o[0] as usize + t.width).max().unwrap();
     let height = tiles.iter().zip(&offsets).map(|(t, o)| o[1] as usize + t.height).max().unwrap();
     if width.saturating_mul(height) > MAX_CANVAS_PIXELS {
-        return Err("The panorama would be too large; check the image order and alignment".into());
+        return Err(Error::Panorama("The panorama would be too large; check the image order and alignment".into()));
     }
 
     // Feathered blend: weight = distance to the tile's nearest edge (+1).
@@ -328,7 +331,7 @@ mod tests {
         let flat = vec![290.0f32; 50 * 50];
         let tiles = [Tile { kelvin: &flat, width: 50, height: 50 }, Tile { kelvin: &flat, width: 50, height: 50 }];
         // Offset (100_000, 100_000) makes a 100_050 × 100_050 canvas, far above MAX_CANVAS_PIXELS.
-        let err = stitch(&tiles, &[None, Some([100_000, 100_000])]).unwrap_err();
+        let err = stitch(&tiles, &[None, Some([100_000, 100_000])]).unwrap_err().to_string();
         assert!(err.contains("too large"), "{err}");
     }
 
@@ -336,7 +339,7 @@ mod tests {
     fn refuses_images_without_overlap() {
         let flat = vec![290.0f32; 50 * 50];
         let tiles = [Tile { kelvin: &flat, width: 50, height: 50 }, Tile { kelvin: &flat, width: 50, height: 50 }];
-        assert!(stitch(&tiles, &[]).unwrap_err().contains("does not overlap"));
+        assert!(stitch(&tiles, &[]).unwrap_err().to_string().contains("does not overlap"));
         assert!(stitch(&tiles[..1], &[]).is_err());
     }
 }

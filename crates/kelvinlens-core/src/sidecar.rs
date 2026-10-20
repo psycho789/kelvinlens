@@ -165,4 +165,19 @@ mod tests {
         let json = serde_json::to_string(&Sidecar::default()).unwrap();
         assert!(!json.contains("isotherms") && !json.contains("presentation") && !json.contains("asset"), "{json}");
     }
+
+    #[test]
+    fn findings_saved_by_earlier_versions_still_load() {
+        use crate::analysis::SeverityLevel;
+        let finding = |level: u8| {
+            format!(
+                r#"{{"label":"A","hot":true,"area":{{"kind":"spot","x":1.0,"y":1.0}},"pixels":1,"extremeK":300.0,"at":[1,1],"referenceK":290.0,"deltaK":10.0,"thermalIndex":null,"severity":{{"level":{level},"label":"l","action":"a"}}}}"#
+            )
+        };
+        let json = format!(r#"{{"version":2,"findings":[{},{}]}}"#, finding(3), finding(0));
+        let s: Sidecar = serde_json::from_str(&json).unwrap();
+        let levels: Vec<_> = s.findings.iter().map(|f| f.severity.level).collect();
+        assert_eq!(levels, [SeverityLevel::High, SeverityLevel::Low]);
+        assert!(serde_json::to_string(&s).unwrap().contains(r#""level":3"#));
+    }
 }

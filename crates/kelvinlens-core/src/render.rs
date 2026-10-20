@@ -229,6 +229,15 @@ pub enum Fusion {
     Interval { lo: f32, hi: f32 },
 }
 
+/// A rectangle in (fractional) pixels. On the wire it is the four numbers `x, y, w, h`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RectF {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
 /// A composite image and where it sits: `placement` maps thermal pixels onto it the same way the
 /// picture-in-picture geometry maps them onto the photo.
 #[derive(Clone, Debug, PartialEq)]
@@ -236,9 +245,29 @@ pub struct Composite {
     pub width: usize,
     pub height: usize,
     pub rgb: Vec<u8>,
-    /// Thermal source rectangle `[x, y, w, h]` and where it lands in composite pixels.
-    pub source: [f32; 4],
-    pub destination: [f32; 4],
+    /// Thermal source rectangle and where it lands in composite pixels.
+    pub source: RectF,
+    pub destination: RectF,
+}
+
+/// Bytes before the pixels in `Composite::to_wire`: width and height (u32), then 8 x f32.
+const WIRE_HEADER_LEN: usize = 40;
+
+impl Composite {
+    /// The reply of the `fuse` command, little-endian: width and height (`u32`), `source` then
+    /// `destination` (4 x `f32` each), then the pixels as RGBA. `src/fuseWire.ts` reads it.
+    pub fn to_wire(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(WIRE_HEADER_LEN + self.rgb.len() / 3 * 4);
+        out.extend_from_slice(&(self.width as u32).to_le_bytes());
+        out.extend_from_slice(&(self.height as u32).to_le_bytes());
+        for r in [self.source, self.destination] {
+            for v in [r.x, r.y, r.w, r.h] {
+                out.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        out.extend(rgba(&self.rgb));
+        out
+    }
 }
 
 /// A manual correction of where the thermal image sits on the photo: shift `dx`, `dy` (photo
@@ -254,27 +283,27 @@ pub fn placement_aligned(
     height: usize,
     photo: &Photo,
     align: Alignment,
-) -> ([f32; 4], [f32; 4]) {
-    let (src, [x, y, w, h]) = placement(pip, width, height, photo);
+) -> (RectF, RectF) {
+    let (src, RectF { x, y, w, h }) = placement(pip, width, height, photo);
     let s = if align[2].is_finite() && align[2] > 0.05 { align[2] } else { 1.0 };
-    (src, [x + align[0] - w * (s - 1.0) / 2.0, y + align[1] - h * (s - 1.0) / 2.0, w * s, h * s])
+    (src, RectF { x: x + align[0] - w * (s - 1.0) / 2.0, y: y + align[1] - h * (s - 1.0) / 2.0, w: w * s, h: h * s })
 }
 
 /// Thermal pixels → photo pixels for the whole thermal frame. The PiP geometry maps the camera's
 /// picture-in-picture crop; the same linear mapping is extended to the full frame (as FLIR does
 /// for blending and fusion). Without geometry the thermal image is stretched over the photo.
 /// `src/viewer.ts` implements the same mapping for the overlay; keep the two in step.
-pub fn placement(pip: Option<Pip>, width: usize, height: usize, photo: &Photo) -> ([f32; 4], [f32; 4]) {
-    let full = [0.0, 0.0, width as f32, height as f32];
+pub fn placement(pip: Option<Pip>, width: usize, height: usize, photo: &Photo) -> (RectF, RectF) {
+    let full = RectF { x: 0.0, y: 0.0, w: width as f32, h: height as f32 };
     match pip {
         Some(p) if p.source.w > 0 && p.source.h > 0 => {
             let sx = p.destination.w as f32 / p.source.w as f32;
             let sy = p.destination.h as f32 / p.source.h as f32;
             let x = p.destination.x as f32 - p.source.x as f32 * sx;
             let y = p.destination.y as f32 - p.source.y as f32 * sy;
-            (full, [x, y, width as f32 * sx, height as f32 * sy])
+            (full, RectF { x, y, w: width as f32 * sx, h: height as f32 * sy })
         }
-        _ => (full, [0.0, 0.0, photo.width as f32, photo.height as f32]),
+        _ => (full, RectF { x: 0.0, y: 0.0, w: photo.width as f32, h: photo.height as f32 }),
     }
 }
 
@@ -304,17 +333,17 @@ pub fn fuse(req: &FuseRequest) -> Composite {
 }
 
 /// MSX: the thermal image with the photo's edges added wherever the photo overlaps it.
-fn fuse_msx(req: &FuseRequest, thermal: &[u8], src: [f32; 4], dst: [f32; 4], strength: f32) -> Composite {
+fn fuse_msx(req: &FuseRequest, thermal: &[u8], src: RectF, dst: RectF, strength: f32) -> Composite {
     let (width, height, photo) = (req.width, req.height, req.photo);
     // Output covers the whole thermal image, at most `max_width` wide; the photo's edges
     // are added wherever the photo overlaps it.
     let scale = (req.max_width as f32 / width as f32).clamp(1.0, 8.0).floor().max(1.0);
     let (ow, oh) = (width * scale as usize, height * scale as usize);
     // Photo pixels per output pixel, for box-averaging the luminance.
-    let foot = (dst[2] / src[2] / scale).max(1.0);
+    let foot = (dst.w / src.w / scale).max(1.0);
     let to_photo = |ox: usize, oy: usize| {
         let (tx, ty) = ((ox as f32 + 0.5) / scale, (oy as f32 + 0.5) / scale);
-        (dst[0] + (tx - src[0]) * dst[2] / src[2], dst[1] + (ty - src[1]) * dst[3] / src[3])
+        (dst.x + (tx - src.x) * dst.w / src.w, dst.y + (ty - src.y) * dst.h / src.h)
     };
     let mut lum = vec![f32::NAN; ow * oh];
     for oy in 0..oh {
@@ -339,13 +368,13 @@ fn fuse_msx(req: &FuseRequest, thermal: &[u8], src: [f32; 4], dst: [f32; 4], str
         width: ow,
         height: oh,
         rgb: out,
-        source: [0.0, 0.0, width as f32, height as f32],
-        destination: [0.0, 0.0, width as f32 * scale, height as f32 * scale],
+        source: RectF { x: 0.0, y: 0.0, w: width as f32, h: height as f32 },
+        destination: RectF { x: 0.0, y: 0.0, w: width as f32 * scale, h: height as f32 * scale },
     }
 }
 
 /// Interval: the thermal image where the temperature is within `range`, the photo elsewhere.
-fn fuse_interval(req: &FuseRequest, thermal: &[u8], src: [f32; 4], dst: [f32; 4], range: (f32, f32)) -> Composite {
+fn fuse_interval(req: &FuseRequest, thermal: &[u8], src: RectF, dst: RectF, range: (f32, f32)) -> Composite {
     let (kelvin, width, height, photo) = (req.kelvin, req.width, req.height, req.photo);
     let (lo, hi) = (range.0.min(range.1), range.0.max(range.1));
     let scale = (req.max_width as f32 / photo.width as f32).min(1.0);
@@ -355,9 +384,9 @@ fn fuse_interval(req: &FuseRequest, thermal: &[u8], src: [f32; 4], dst: [f32; 4]
     for oy in 0..oh {
         for ox in 0..ow {
             let (px, py) = ((ox as f32 + 0.5) / scale, (oy as f32 + 0.5) / scale);
-            let tx = src[0] + (px - dst[0]) * src[2] / dst[2];
-            let ty = src[1] + (py - dst[1]) * src[3] / dst[3];
-            let inside = tx >= src[0] && ty >= src[1] && tx < src[0] + src[2] && ty < src[1] + src[3];
+            let tx = src.x + (px - dst.x) * src.w / dst.w;
+            let ty = src.y + (py - dst.y) * src.h / dst.h;
+            let inside = tx >= src.x && ty >= src.y && tx < src.x + src.w && ty < src.y + src.h;
             let k = if inside { nearest(kelvin, width, height, tx, ty) } else { f32::NAN };
             if k >= lo && k <= hi {
                 out.extend(sample_rgb(thermal, width, height, tx, ty).map(|v| v.round().clamp(0.0, 255.0) as u8));
@@ -368,7 +397,7 @@ fn fuse_interval(req: &FuseRequest, thermal: &[u8], src: [f32; 4], dst: [f32; 4]
             }
         }
     }
-    let destination = [dst[0] * scale, dst[1] * scale, dst[2] * scale, dst[3] * scale];
+    let destination = RectF { x: dst.x * scale, y: dst.y * scale, w: dst.w * scale, h: dst.h * scale };
     Composite { width: ow, height: oh, rgb: out, source: src, destination }
 }
 
@@ -420,6 +449,23 @@ mod tests {
     use super::*;
     use crate::analysis::IsothermKind;
     use crate::palette;
+
+    #[test]
+    fn composite_wire_header_layout_matches_the_ui_parser() {
+        let c = Composite {
+            width: 2,
+            height: 1,
+            rgb: vec![10, 20, 30, 40, 50, 60],
+            source: RectF { x: 0.0, y: 0.0, w: 4.0, h: 2.0 },
+            destination: RectF { x: 1.0, y: 2.0, w: 8.0, h: 4.0 },
+        };
+        let expected: Vec<u8> = include_str!("../tests/fixtures/fuse-wire.hex")
+            .split_whitespace()
+            .flat_map(|w| (0..w.len()).step_by(2).map(|i| u8::from_str_radix(&w[i..i + 2], 16).unwrap()))
+            .collect();
+        assert_eq!(c.to_wire(), expected);
+        assert_eq!(expected.len(), WIRE_HEADER_LEN + 2 * 4);
+    }
 
     fn look(distribution: Distribution) -> Look {
         Look { palette: palette::by_id("white-hot").unwrap(), range: [280.0, 300.0], distribution, isotherms: vec![] }
@@ -523,7 +569,10 @@ mod tests {
         // Flat thermal is mid-grey; the dark side of the edge darkens and the bright side brightens.
         assert!(lum(3) < 128 && lum(4) > 128, "{} {}", lum(3), lum(4));
         assert_eq!(lum(0), 128);
-        assert_eq!((c.source, c.destination), ([0.0, 0.0, 4.0, 4.0], [0.0, 0.0, 8.0, 8.0]));
+        assert_eq!(
+            (c.source, c.destination),
+            (RectF { x: 0.0, y: 0.0, w: 4.0, h: 4.0 }, RectF { x: 0.0, y: 0.0, w: 8.0, h: 8.0 })
+        );
         // Where the photo does not reach (thermal wider than the photo), no edges are invented.
         let wide = Pip {
             source: super::super::thermogram::Rect { x: 0, y: 0, w: 4, h: 4 },
@@ -567,18 +616,18 @@ mod tests {
         };
         let p = Photo { width: 2592, height: 1944, rgb: vec![] };
         let (src, dst) = placement(Some(pip), 640, 480, &p);
-        assert_eq!(src, [0.0, 0.0, 640.0, 480.0]);
+        assert_eq!(src, RectF { x: 0.0, y: 0.0, w: 640.0, h: 480.0 });
         // 1.25 photo pixels per thermal pixel; thermal (160, 120) still lands on (1000, 800).
-        assert_eq!(dst, [800.0, 650.0, 800.0, 600.0]);
+        assert_eq!(dst, RectF { x: 800.0, y: 650.0, w: 800.0, h: 600.0 });
     }
 
     #[test]
     fn alignment_shifts_and_scales_around_the_centre() {
         let p = Photo { width: 100, height: 100, rgb: vec![] };
         let (_, d) = placement_aligned(None, 10, 10, &p, [5.0, -3.0, 1.1]);
-        assert!((d[0] - 0.0).abs() < 1e-4 && (d[1] + 8.0).abs() < 1e-4, "{d:?}");
-        assert!((d[2] - 110.0).abs() < 1e-4 && (d[3] - 110.0).abs() < 1e-4);
-        assert_eq!(placement_aligned(None, 10, 10, &p, NO_ALIGNMENT).1, [0.0, 0.0, 100.0, 100.0]);
+        assert!((d.x - 0.0).abs() < 1e-4 && (d.y + 8.0).abs() < 1e-4, "{d:?}");
+        assert!((d.w - 110.0).abs() < 1e-4 && (d.h - 110.0).abs() < 1e-4);
+        assert_eq!(placement_aligned(None, 10, 10, &p, NO_ALIGNMENT).1, RectF { x: 0.0, y: 0.0, w: 100.0, h: 100.0 });
     }
 
     #[test]

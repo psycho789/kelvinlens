@@ -1,5 +1,6 @@
 // Typed wrappers around the Rust commands in src-tauri/src/lib.rs.
 import { invoke } from "@tauri-apps/api/core";
+import { FUSE_HEADER_BYTES, parseFuseHeader } from "./fuseWire";
 
 export type Kelvin = number;
 export type Range = [Kelvin, Kelvin];
@@ -108,8 +109,10 @@ export interface Presentation {
   align?: [number, number, number] | null;
 }
 
+export type SeverityLevel = 1 | 2 | 3 | 4;
+
 export interface Severity {
-  level: number;
+  level: SeverityLevel;
   label: string;
   action: string;
 }
@@ -182,11 +185,14 @@ export interface VideoInfo {
   frameRate: number | null;
 }
 
+/** Rust `thermogram::Format`, as serde writes it. */
+export type ImageFormat = "flir" | "fluke" | "hti" | "irg" | "infiray" | "png" | "tiff" | "video" | "panorama";
+
 export interface ImageInfo {
   id: number;
   path: string;
   name: string;
-  format: string;
+  format: ImageFormat;
   formatLabel: string;
   width: number;
   height: number;
@@ -225,6 +231,9 @@ export interface Composite {
 
 export type Paper = "a4" | "us-letter";
 export type ReportFormat = "pdf" | "html";
+export type ImageSection =
+  | "isotherms" | "measurements" | "formulas" | "findings" | "electrical" | "building"
+  | "hvac" | "profiles" | "fields" | "notes" | "parameters" | "details";
 export type TemplateKind = "general" | "electrical" | "building" | "hvac";
 
 export interface Template {
@@ -237,7 +246,7 @@ export interface Template {
   coverFields: string[];
   imageFields: string[];
   sections: { summary: boolean; contents: boolean; findingsOverview: boolean; trends: boolean; signature: boolean };
-  imageSections: string[];
+  imageSections: ImageSection[];
   imagesPerPage: number;
   disclaimer: string;
   footer: string;
@@ -295,6 +304,23 @@ export interface StitchResult {
   scores: number[];
 }
 
+export interface TriageSettings {
+  aboveK: Kelvin | null;
+  belowK: Kelvin | null;
+}
+
+export interface MapItem {
+  id: number;
+  description: string;
+}
+
+export type ErrorKind = "invalidFile" | "invalidInput" | "unsupported" | "notFound" | "io" | "internal";
+/** What a rejected command call carries (Rust `CmdError`, src-tauri/src/cmd_error.rs). */
+export interface CmdError {
+  kind: ErrorKind;
+  message: string;
+}
+
 export interface Series {
   rows: (Stats | null)[][];
   times: number[];
@@ -329,18 +355,11 @@ export const api = {
   },
   async fuse(id: number, look: Look, fusion: Fusion, maxWidth: number, align: [number, number, number] | null = null): Promise<Composite> {
     const buf = await invoke<ArrayBuffer>("fuse", { id, look, fusion, maxWidth, align });
-    const head = new DataView(buf, 0, 40);
-    const w = head.getUint32(0, true);
-    const h = head.getUint32(4, true);
-    const f = (i: number) => head.getFloat32(8 + i * 4, true);
-    return {
-      image: rgbaImage(buf, w, h, 40),
-      source: [f(0), f(1), f(2), f(3)],
-      destination: [f(4), f(5), f(6), f(7)],
-    };
+    const head = parseFuseHeader(buf);
+    return { image: rgbaImage(buf, head.width, head.height, FUSE_HEADER_BYTES), source: head.source, destination: head.destination };
   },
   inspect: (id: number, settings: InspectSettings) => invoke<Finding[]>("inspect", { id, settings }),
-  triage: (paths: string[], settings: { aboveK: Kelvin | null; belowK: Kelvin | null }) => invoke<TriageRow[]>("triage", { paths, settings }),
+  triage: (paths: string[], settings: TriageSettings) => invoke<TriageRow[]>("triage", { paths, settings }),
   stitch: (ids: number[], offsets: ([number, number] | null)[]) => invoke<StitchResult>("stitch", { ids, offsets }),
   exportThermalTiff: (id: number, path: string) => invoke<void>("export_thermal_tiff", { id, path }),
   saveFlirCopy: (id: number, path: string) => invoke<void>("save_flir_copy", { id, path }),
@@ -367,7 +386,7 @@ export const api = {
   writeText: (path: string, text: string) => invoke<void>("write_text", { path, text }),
   readText: (path: string) => invoke<string>("read_text", { path }),
   readImageDataUrl: (path: string) => invoke<string>("read_image_data_url", { path }),
-  exportMap: (items: { id: number; description: string }[], title: string, path: string) =>
+  exportMap: (items: MapItem[], title: string, path: string) =>
     invoke<number>("export_map", { items, title, path }),
   saveSidecar: (id: number, edits: Sidecar) => invoke<string>("save_sidecar", { id, edits }),
   makeReport: (info: ReportInfo, items: ReportItem[], path: string) => invoke<void>("make_report", { info, items, path }),

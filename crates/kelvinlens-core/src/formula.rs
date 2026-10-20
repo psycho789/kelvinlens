@@ -11,8 +11,34 @@
 
 use serde::{Deserialize, Serialize};
 
+use std::fmt;
+
 use crate::Unit;
 use crate::measure::{Measurement, Stats};
+
+/// Why a formula has no value. The text is what the user sees in `FormulaResult::error`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FormulaError(String);
+
+impl fmt::Display for FormulaError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for FormulaError {}
+
+impl From<String> for FormulaError {
+    fn from(m: String) -> Self {
+        FormulaError(m)
+    }
+}
+
+impl From<&str> for FormulaError {
+    fn from(m: &str) -> Self {
+        FormulaError(m.to_string())
+    }
+}
 
 /// How a formula's result is shown.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,13 +122,17 @@ fn evaluate_all<'a>(
             }
             match r {
                 Ok(v) => FormulaResult { value: Some(v), error: None },
-                Err(e) => FormulaResult { value: None, error: Some(e) },
+                Err(e) => FormulaResult { value: None, error: Some(e.to_string()) },
             }
         })
         .collect()
 }
 
-pub fn evaluate<'a>(expression: &str, lookup: impl Fn(&str) -> Option<Value<'a>>, unit: Unit) -> Result<f64, String> {
+pub fn evaluate<'a>(
+    expression: &str,
+    lookup: impl Fn(&str) -> Option<Value<'a>>,
+    unit: Unit,
+) -> Result<f64, FormulaError> {
     let tokens = tokenize(expression)?;
     if tokens.is_empty() {
         return Err("Empty formula".into());
@@ -110,7 +140,7 @@ pub fn evaluate<'a>(expression: &str, lookup: impl Fn(&str) -> Option<Value<'a>>
     let mut p = Parser { tokens, pos: 0, lookup: &lookup, unit };
     let v = p.expr()?;
     if p.pos < p.tokens.len() {
-        return Err(format!("Unexpected {}", p.tokens[p.pos].describe()));
+        return Err(format!("Unexpected {}", p.tokens[p.pos].describe()).into());
     }
     if v.is_finite() { Ok(v) } else { Err("The result is not a number (division by zero?)".into()) }
 }
@@ -132,7 +162,7 @@ impl Token {
     }
 }
 
-fn tokenize(s: &str) -> Result<Vec<Token>, String> {
+fn tokenize(s: &str) -> Result<Vec<Token>, FormulaError> {
     let chars: Vec<char> = s.chars().collect();
     let mut out = Vec::new();
     let mut i = 0;
@@ -174,7 +204,7 @@ fn tokenize(s: &str) -> Result<Vec<Token>, String> {
             out.push(Token::Op(c));
             i += 1;
         } else {
-            return Err(format!("Unexpected character \"{c}\""));
+            return Err(format!("Unexpected character \"{c}\"").into());
         }
     }
     Ok(out)
@@ -201,18 +231,18 @@ impl<'a, F: Fn(&str) -> Option<Value<'a>>> Parser<'_, 'a, F> {
         }
     }
 
-    fn expect(&mut self, op: char) -> Result<(), String> {
+    fn expect(&mut self, op: char) -> Result<(), FormulaError> {
         if self.eat(op) {
             Ok(())
         } else {
             Err(match self.peek() {
-                Some(t) => format!("Expected \"{op}\" but found {}", t.describe()),
-                None => format!("Expected \"{op}\" at the end"),
+                Some(t) => format!("Expected \"{op}\" but found {}", t.describe()).into(),
+                None => format!("Expected \"{op}\" at the end").into(),
             })
         }
     }
 
-    fn expr(&mut self) -> Result<f64, String> {
+    fn expr(&mut self) -> Result<f64, FormulaError> {
         let mut v = self.term()?;
         loop {
             if self.eat('+') {
@@ -225,7 +255,7 @@ impl<'a, F: Fn(&str) -> Option<Value<'a>>> Parser<'_, 'a, F> {
         }
     }
 
-    fn term(&mut self) -> Result<f64, String> {
+    fn term(&mut self) -> Result<f64, FormulaError> {
         let mut v = self.power()?;
         loop {
             if self.eat('*') {
@@ -238,7 +268,7 @@ impl<'a, F: Fn(&str) -> Option<Value<'a>>> Parser<'_, 'a, F> {
         }
     }
 
-    fn power(&mut self) -> Result<f64, String> {
+    fn power(&mut self) -> Result<f64, FormulaError> {
         let base = self.unary()?;
         if self.eat('^') {
             // Right-associative: 2^3^2 = 2^9.
@@ -248,7 +278,7 @@ impl<'a, F: Fn(&str) -> Option<Value<'a>>> Parser<'_, 'a, F> {
         }
     }
 
-    fn unary(&mut self) -> Result<f64, String> {
+    fn unary(&mut self) -> Result<f64, FormulaError> {
         if self.eat('-') {
             Ok(-self.unary()?)
         } else if self.eat('+') {
@@ -258,7 +288,7 @@ impl<'a, F: Fn(&str) -> Option<Value<'a>>> Parser<'_, 'a, F> {
         }
     }
 
-    fn primary(&mut self) -> Result<f64, String> {
+    fn primary(&mut self) -> Result<f64, FormulaError> {
         match self.peek().cloned() {
             Some(Token::Num(n)) => {
                 self.pos += 1;
@@ -292,24 +322,24 @@ impl<'a, F: Fn(&str) -> Option<Value<'a>>> Parser<'_, 'a, F> {
                             self.pos += 1;
                             Some(s.to_ascii_lowercase())
                         }
-                        _ => return Err(format!("Expected max, min, avg, sd or count after \"{name}.\"")),
+                        _ => return Err(format!("Expected max, min, avg, sd or count after \"{name}.\"").into()),
                     }
                 } else {
                     None
                 };
                 self.reference(&name, stat.as_deref())
             }
-            Some(t) => Err(format!("Unexpected {}", t.describe())),
+            Some(t) => Err(format!("Unexpected {}", t.describe()).into()),
             None => Err("The formula ends too early".into()),
         }
     }
 
-    fn reference(&self, name: &str, stat: Option<&str>) -> Result<f64, String> {
+    fn reference(&self, name: &str, stat: Option<&str>) -> Result<f64, FormulaError> {
         let value = (self.lookup)(name).ok_or_else(|| format!("No measurement or formula called \"{name}\""))?;
         match value {
             Value::Number(n) => match stat {
                 None => Ok(n),
-                Some(s) => Err(format!("\"{name}\" is a formula; \".{s}\" only applies to measurements")),
+                Some(s) => Err(format!("\"{name}\" is a formula; \".{s}\" only applies to measurements").into()),
             },
             Value::Measurement { stats } => {
                 let s = stats.ok_or_else(|| format!("{name} has no temperature"))?;
@@ -320,7 +350,9 @@ impl<'a, F: Fn(&str) -> Option<Value<'a>>> Parser<'_, 'a, F> {
                     Some("min") => Ok(t(s.min)),
                     Some("sd" | "std" | "stddev") => Ok(self.unit.delta_from_kelvin(s.std_dev) as f64),
                     Some("count" | "area" | "pixels") => Ok(s.count as f64),
-                    Some(other) => Err(format!("Unknown statistic \".{other}\"; use max, min, avg, sd or count")),
+                    Some(other) => {
+                        Err(format!("Unknown statistic \".{other}\"; use max, min, avg, sd or count").into())
+                    }
                 }
             }
         }
@@ -329,9 +361,13 @@ impl<'a, F: Fn(&str) -> Option<Value<'a>>> Parser<'_, 'a, F> {
 
 const FUNCTIONS: [&str; 6] = ["abs", "min", "max", "avg", "sqrt", "round"];
 
-fn call(name: &str, args: &[f64]) -> Result<f64, String> {
+fn call(name: &str, args: &[f64]) -> Result<f64, FormulaError> {
     let need = |n: usize| {
-        if args.len() == n { Ok(()) } else { Err(format!("{name}() takes {n} value{}", if n == 1 { "" } else { "s" })) }
+        if args.len() == n {
+            Ok(())
+        } else {
+            Err(FormulaError::from(format!("{name}() takes {n} value{}", if n == 1 { "" } else { "s" })))
+        }
     };
     match name {
         "abs" => need(1).map(|_| args[0].abs()),
@@ -344,7 +380,7 @@ fn call(name: &str, args: &[f64]) -> Result<f64, String> {
             }
             _ => Err("round() takes a value and optionally a number of digits".into()),
         },
-        _ if args.is_empty() => Err(format!("{name}() needs at least one value")),
+        _ if args.is_empty() => Err(format!("{name}() needs at least one value").into()),
         "min" => Ok(args.iter().copied().fold(f64::INFINITY, f64::min)),
         "max" => Ok(args.iter().copied().fold(f64::NEG_INFINITY, f64::max)),
         "avg" => Ok(args.iter().sum::<f64>() / args.len() as f64),
@@ -375,6 +411,14 @@ mod tests {
             },
             unit,
         )
+        .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn formula_error_displays_its_message() {
+        let e = FormulaError::from("Empty formula");
+        assert_eq!(e.to_string(), "Empty formula");
+        assert_eq!(evaluate("", |_| None, Unit::Celsius).unwrap_err(), e);
     }
 
     fn close(a: Result<f64, String>, b: f64) {

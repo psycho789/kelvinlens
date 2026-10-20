@@ -4,15 +4,16 @@
 
 use std::fmt::Write as _;
 
+use crate::analysis::SeverityLevel;
 use crate::measure::Shape;
-use crate::report::{Chart, Prepared, PreparedImage, base64_encode};
+use crate::report::{Chart, ImageSection, Prepared, PreparedImage, base64_encode};
 use crate::sidecar::Annotation;
 use crate::xml::escape as esc;
 
 const SEVERITY: [&str; 4] = ["#64748b", "#ca8a04", "#ea580c", "#dc2626"];
 
-fn severity_color(level: u8) -> &'static str {
-    SEVERITY[(level.clamp(1, 4) - 1) as usize]
+fn severity_color(level: SeverityLevel) -> &'static str {
+    SEVERITY[level as usize - 1]
 }
 
 fn table(head: &[&str], rows: &[Vec<String>]) -> String {
@@ -40,7 +41,7 @@ fn kv(rows: &[[String; 2]]) -> String {
     t + "</tbody></table>"
 }
 
-fn severity_cell(level: u8, label: &str) -> String {
+fn severity_cell(level: SeverityLevel, label: &str) -> String {
     format!("<span class=\"sw\" style=\"background:{}\"></span>{}", severity_color(level), esc(label))
 }
 
@@ -135,9 +136,9 @@ fn image_html(o: &mut String, p: &Prepared, img: &PreparedImage) {
     }
     o.push_str("</div>");
 
-    for name in &p.image_sections {
-        match name.as_str() {
-            "isotherms" if !img.isotherms.is_empty() => {
+    for section in &p.image_sections {
+        match section {
+            ImageSection::Isotherms if !img.isotherms.is_empty() => {
                 o.push_str("<h2>Isotherms and alarms</h2><ul class=\"legend\">");
                 for r in &img.isotherms {
                     let _ = write!(
@@ -149,7 +150,7 @@ fn image_html(o: &mut String, p: &Prepared, img: &PreparedImage) {
                 }
                 o.push_str("</ul>");
             }
-            "measurements" if !img.measurements.is_empty() => {
+            ImageSection::Measurements if !img.measurements.is_empty() => {
                 let alarms = img.measurements.iter().any(|m| !m.alarm.is_empty());
                 let coverage = img.measurements.iter().any(|m| !m.coverage.is_empty());
                 let mut head = vec!["Label", "Tool", "Min", "Max", "Average"];
@@ -180,7 +181,7 @@ fn image_html(o: &mut String, p: &Prepared, img: &PreparedImage) {
                 o.push_str("<h2>Measurements</h2>");
                 o.push_str(&table(&head, &rows));
             }
-            "formulas" if !img.formulas.is_empty() => {
+            ImageSection::Formulas if !img.formulas.is_empty() => {
                 let rows: Vec<Vec<String>> = img
                     .formulas
                     .iter()
@@ -189,7 +190,7 @@ fn image_html(o: &mut String, p: &Prepared, img: &PreparedImage) {
                 o.push_str("<h2>Formulas</h2>");
                 o.push_str(&table(&["Label", "Formula", "Result"], &rows));
             }
-            "findings" if !img.findings.is_empty() => {
+            ImageSection::Findings if !img.findings.is_empty() => {
                 let rows: Vec<Vec<String>> = img
                     .findings
                     .iter()
@@ -207,35 +208,35 @@ fn image_html(o: &mut String, p: &Prepared, img: &PreparedImage) {
                 o.push_str("<h2>Findings</h2>");
                 o.push_str(&table(&["Finding", "Type", "Temperature", "ΔT", "Severity", "Action"], &rows));
             }
-            "electrical" if !img.electrical.is_empty() => {
+            ImageSection::Electrical if !img.electrical.is_empty() => {
                 let rows: Vec<Vec<String>> =
                     img.electrical.iter().map(|r| r.iter().map(|c| esc(c)).collect()).collect();
                 o.push_str("<h2>Temperature rise (NETA)</h2>");
                 o.push_str(&table(&["Label", "Max", "Rise", "Severity", "Action"], &rows));
             }
-            "building" if !img.building.is_empty() => {
+            ImageSection::Building if !img.building.is_empty() => {
                 let rows: Vec<Vec<String>> = img.building.iter().map(|r| r.iter().map(|c| esc(c)).collect()).collect();
                 o.push_str("<h2>Insulation and moisture</h2>");
                 o.push_str(&table(&["Label", "Coldest", "Thermal index", "Surface RH", "Risk"], &rows));
             }
-            "hvac" if !img.hvac.is_empty() => {
+            ImageSection::Hvac if !img.hvac.is_empty() => {
                 o.push_str("<h2>Temperature split</h2>");
                 o.push_str(&kv(&img.hvac));
             }
-            "profiles" if !img.profiles.is_empty() => {
+            ImageSection::Profiles if !img.profiles.is_empty() => {
                 o.push_str("<h2>Profiles</h2>");
                 for c in &img.profiles {
                     o.push_str(&chart_svg(c));
                 }
             }
-            "fields" if !img.fields.is_empty() => {
+            ImageSection::Fields if !img.fields.is_empty() => {
                 o.push_str("<h2>Inspection details</h2>");
                 o.push_str(&kv(&img.fields));
             }
-            "notes" if !img.notes.is_empty() => {
+            ImageSection::Notes if !img.notes.is_empty() => {
                 let _ = write!(o, "<h2>Notes</h2><p class=\"pre\">{}</p>", esc(&img.notes));
             }
-            "parameters" => {
+            ImageSection::Parameters => {
                 o.push_str("<h2>Parameters</h2>");
                 if img.params.is_empty() {
                     o.push_str("<p class=\"muted\">This format stores final temperatures only.</p>");
@@ -248,7 +249,7 @@ fn image_html(o: &mut String, p: &Prepared, img: &PreparedImage) {
                     let _ = write!(o, "<p class=\"muted\">Image temperatures: {}</p>", esc(r));
                 }
             }
-            "details" => {
+            ImageSection::Details => {
                 o.push_str("<h2>Image details</h2>");
                 o.push_str(&kv(&img.camera));
             }

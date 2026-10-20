@@ -46,9 +46,7 @@ export function toast(message: string, kind: "info" | "error" = "info"): void {
   setTimeout(() => el.remove(), kind === "error" ? 7400 : 3900);
 }
 
-export function errorText(e: unknown): string {
-  return typeof e === "string" ? e : e instanceof Error ? e.message : JSON.stringify(e);
-}
+export { errorText } from "./errors";
 
 /** Runs `fn` at most once per animation frame with the latest arguments. */
 export function perFrame<A extends unknown[]>(fn: (...args: A) => void): (...args: A) => void {

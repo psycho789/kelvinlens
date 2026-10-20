@@ -1,12 +1,12 @@
 // Report template editor: duplicate a built-in template and change its branding, fields and
 // sections. Custom templates are kept in the app's settings and can be exported and imported.
 import { pickers } from "./pickers";
-import { api, type Template, type TemplateKind } from "./api";
+import { api, type ImageSection, type Template, type TemplateKind } from "./api";
 import { errorText, fill, h, toast } from "./dom";
 import { field } from "./modal";
 import { allTemplates, loadSettings, saveSettings, state } from "./state";
 
-const SECTION_NAMES: Record<string, string> = {
+const SECTION_NAMES: Record<ImageSection, string> = {
   isotherms: "Isotherms and alarms",
   measurements: "Measurements",
   formulas: "Formulas",
@@ -92,7 +92,7 @@ export function templateEditor(): Promise<void> {
           value: value.join("\n"),
           onchange: (e: Event) => set((e.target as HTMLTextAreaElement).value.split("\n").map((s) => s.trim()).filter(Boolean)),
         });
-      const order = [...t.imageSections, ...Object.keys(SECTION_NAMES).filter((s) => !t.imageSections.includes(s))];
+      const order = [...t.imageSections, ...(Object.keys(SECTION_NAMES) as ImageSection[]).filter((s) => !t.imageSections.includes(s))];
       const sectionRows = order.map((name) => {
         const on = t.imageSections.includes(name);
         const move = (d: number) => {
@@ -120,7 +120,7 @@ export function templateEditor(): Promise<void> {
                 renderForm();
               },
             }),
-            SECTION_NAMES[name] ?? name,
+            SECTION_NAMES[name],
           ),
           h("span", { class: "spacer" }),
           on && !ro ? h("button", { type: "button", class: "icon", title: "Move up", onclick: () => move(-1) }, "↑") : null,
@@ -237,6 +237,7 @@ export function templateEditor(): Promise<void> {
             const base = structuredClone(state.builtinTemplates[0]!);
             const t: Template = { ...base, ...(data.template ?? {}), sections: { ...base.sections, ...(data.template?.sections ?? {}) } } as Template;
             if (typeof t.name !== "string" || !Array.isArray(t.imageSections)) throw new Error("Not a Kelvinlens template");
+            t.imageSections = t.imageSections.filter((s: string): s is ImageSection => Object.hasOwn(SECTION_NAMES, s));
             t.id = uniqueId(`custom-${(t.id || "imported").replace(/^custom-/, "")}`);
             state.customTemplates.push(t);
             persist();

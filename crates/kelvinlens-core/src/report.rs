@@ -13,12 +13,12 @@ use base64::alphabet;
 use base64::engine::DecodePaddingMode;
 use base64::engine::general_purpose::{GeneralPurpose, GeneralPurposeConfig, STANDARD};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value as Json;
 use typst::foundations::{Array, Bytes, Dict, Value};
 use typst_as_lib::TypstEngine;
 
-use crate::analysis::{self, Basis, Finding, Isotherm, IsothermKind};
+use crate::analysis::{self, Basis, Finding, Isotherm, IsothermKind, SeverityLevel};
 use crate::formula::{self, Formula, ResultKind};
 use crate::measure::{self, Measurement, Shape};
 use crate::params::{Param, Params};
@@ -79,21 +79,40 @@ impl Default for Sections {
     }
 }
 
-/// Sections shown for each image, in this order. Unknown names are ignored.
-pub const IMAGE_SECTIONS: [&str; 12] = [
-    "isotherms",
-    "measurements",
-    "formulas",
-    "findings",
-    "electrical",
-    "building",
-    "hvac",
-    "profiles",
-    "fields",
-    "notes",
-    "parameters",
-    "details",
-];
+/// Sections shown for each image, in this order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ImageSection {
+    Isotherms,
+    Measurements,
+    Formulas,
+    Findings,
+    Electrical,
+    Building,
+    Hvac,
+    Profiles,
+    Fields,
+    Notes,
+    Parameters,
+    Details,
+}
+
+/// Reads section names and drops unknown ones, so a template saved by another version still loads.
+fn known_sections<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Vec<ImageSection>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Entry {
+        Known(ImageSection),
+        Unknown(serde::de::IgnoredAny),
+    }
+    Ok(Vec::<Entry>::deserialize(d)?
+        .into_iter()
+        .filter_map(|e| match e {
+            Entry::Known(s) => Some(s),
+            Entry::Unknown(_) => None,
+        })
+        .collect())
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -112,7 +131,8 @@ pub struct Template {
     /// Fields asked for per image, such as "Component" or "Load %".
     pub image_fields: Vec<String>,
     pub sections: Sections,
-    pub image_sections: Vec<String>,
+    #[serde(deserialize_with = "known_sections")]
+    pub image_sections: Vec<ImageSection>,
     /// 1 or 2.
     pub images_per_page: u8,
     /// Replaces the standard accuracy note when not empty.
@@ -127,13 +147,15 @@ impl Default for Template {
     }
 }
 
-fn sections(names: &[&str]) -> Vec<String> {
-    names.iter().map(|s| s.to_string()).collect()
+fn with_tail(head: &[ImageSection]) -> Vec<ImageSection> {
+    use ImageSection::{Details, Notes, Parameters};
+    head.iter().copied().chain([Notes, Parameters, Details]).collect()
 }
 
 /// The templates that ship with Kelvinlens.
 pub fn builtin_templates() -> Vec<Template> {
-    let base = |id: &str, name: &str, kind: TemplateKind, image_sections: Vec<String>| Template {
+    use ImageSection::*;
+    let base = |id: &str, name: &str, kind: TemplateKind, image_sections: Vec<ImageSection>| Template {
         id: id.into(),
         name: name.into(),
         kind,
@@ -153,17 +175,7 @@ pub fn builtin_templates() -> Vec<Template> {
             "standard",
             "Standard",
             TemplateKind::General,
-            sections(&[
-                "isotherms",
-                "measurements",
-                "formulas",
-                "findings",
-                "profiles",
-                "fields",
-                "notes",
-                "parameters",
-                "details",
-            ]),
+            with_tail(&[Isotherms, Measurements, Formulas, Findings, Profiles, Fields]),
         ),
         Template {
             cover_fields: vec!["Customer".into(), "Equipment".into()],
@@ -173,17 +185,7 @@ pub fn builtin_templates() -> Vec<Template> {
                 "electrical",
                 "Electrical (NETA)",
                 TemplateKind::Electrical,
-                sections(&[
-                    "fields",
-                    "findings",
-                    "electrical",
-                    "measurements",
-                    "formulas",
-                    "profiles",
-                    "notes",
-                    "parameters",
-                    "details",
-                ]),
+                with_tail(&[Fields, Findings, Electrical, Measurements, Formulas, Profiles]),
             )
         },
         Template {
@@ -194,17 +196,7 @@ pub fn builtin_templates() -> Vec<Template> {
                 "building",
                 "Building / moisture",
                 TemplateKind::Building,
-                sections(&[
-                    "fields",
-                    "isotherms",
-                    "building",
-                    "findings",
-                    "measurements",
-                    "profiles",
-                    "notes",
-                    "parameters",
-                    "details",
-                ]),
+                with_tail(&[Fields, Isotherms, Building, Findings, Measurements, Profiles]),
             )
         },
         Template {
@@ -215,17 +207,7 @@ pub fn builtin_templates() -> Vec<Template> {
                 "hvac",
                 "HVAC",
                 TemplateKind::Hvac,
-                sections(&[
-                    "fields",
-                    "hvac",
-                    "measurements",
-                    "formulas",
-                    "findings",
-                    "profiles",
-                    "notes",
-                    "parameters",
-                    "details",
-                ]),
+                with_tail(&[Fields, Hvac, Measurements, Formulas, Findings, Profiles]),
             )
         },
         Template {
@@ -237,12 +219,7 @@ pub fn builtin_templates() -> Vec<Template> {
                 signature: false,
             },
             images_per_page: 2,
-            ..base(
-                "compact",
-                "Compact (2 per page)",
-                TemplateKind::General,
-                sections(&["measurements", "findings", "notes"]),
-            )
+            ..base("compact", "Compact (2 per page)", TemplateKind::General, vec![Measurements, Findings, Notes])
         },
     ]
 }
@@ -344,7 +321,7 @@ pub struct Prepared {
     pub cover_rows: Vec<[String; 2]>,
     pub conditions: Vec<[String; 2]>,
     pub sections: Sections,
-    pub image_sections: Vec<String>,
+    pub image_sections: Vec<ImageSection>,
     pub images_per_page: u8,
     pub overview: Vec<OverviewRow>,
     pub trends: Vec<Chart>,
@@ -359,7 +336,7 @@ pub struct OverviewRow {
     pub label: String,
     pub kind: String,
     pub delta: String,
-    pub level: u8,
+    pub level: SeverityLevel,
     pub severity: String,
     pub action: String,
 }
@@ -429,7 +406,7 @@ pub struct FindingRow {
     pub hot: bool,
     pub extreme: String,
     pub delta: String,
-    pub level: u8,
+    pub level: SeverityLevel,
     pub severity: String,
     pub action: String,
 }
@@ -545,12 +522,7 @@ fn prepare(info: &ReportInfo, images: &[ReportImage], generator: &str) -> Result
         cover_rows,
         conditions,
         sections: template.sections,
-        image_sections: template
-            .image_sections
-            .iter()
-            .filter(|s| IMAGE_SECTIONS.contains(&s.as_str()))
-            .cloned()
-            .collect(),
+        image_sections: template.image_sections.clone(),
         images_per_page: template.images_per_page.clamp(1, 2),
         overview,
         trends: if template.sections.trends { trend_charts(images, unit) } else { Vec::new() },
@@ -1176,11 +1148,56 @@ mod tests {
     }
 
     #[test]
+    fn image_sections_serialise_as_the_template_names() {
+        use ImageSection::*;
+        let all = [
+            Isotherms,
+            Measurements,
+            Formulas,
+            Findings,
+            Electrical,
+            Building,
+            Hvac,
+            Profiles,
+            Fields,
+            Notes,
+            Parameters,
+            Details,
+        ];
+        let names: Vec<String> =
+            all.iter().map(|s| serde_json::to_value(s).unwrap().as_str().unwrap().to_string()).collect();
+        assert_eq!(
+            names,
+            [
+                "isotherms",
+                "measurements",
+                "formulas",
+                "findings",
+                "electrical",
+                "building",
+                "hvac",
+                "profiles",
+                "fields",
+                "notes",
+                "parameters",
+                "details"
+            ]
+        );
+    }
+
+    #[test]
+    fn template_ignores_unknown_image_sections() {
+        let t: Template = serde_json::from_str(r#"{"imageSections":["notes","bogus",7,"details"]}"#).unwrap();
+        assert_eq!(t.image_sections, [ImageSection::Notes, ImageSection::Details]);
+        let t: Template = serde_json::from_str(r#"{"id":"x"}"#).unwrap();
+        assert_eq!(t.image_sections, Template::default().image_sections);
+    }
+
+    #[test]
     fn builtin_templates_are_unique_and_valid() {
         let all = builtin_templates();
         for t in &all {
             assert_eq!(all.iter().filter(|o| o.id == t.id).count(), 1);
-            assert!(t.image_sections.iter().all(|s| IMAGE_SECTIONS.contains(&s.as_str())), "{}", t.id);
             assert!(valid_hex(&t.accent).is_some());
         }
         // A template saved by an older version, with fields missing, still loads.

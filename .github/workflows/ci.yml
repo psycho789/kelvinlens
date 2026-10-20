@@ -54,6 +54,10 @@ jobs:
       - name: Type-check and build UI
         run: npm run build
 
+      - name: Check the Rust/TypeScript wire layout
+        shell: bash
+        run: node scripts/check-wire.mjs
+
       - name: Fetch sample thermograms
         shell: bash
         run: scripts/fetch-testdata.sh

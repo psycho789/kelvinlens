@@ -11,6 +11,8 @@ pub enum Error {
     Params(String),
     Encode(String),
     Report(String),
+    /// Images cannot be stitched into a panorama.
+    Panorama(String),
 }
 
 impl fmt::Display for Error {
@@ -21,6 +23,7 @@ impl fmt::Display for Error {
             Error::Params(m) => write!(f, "{m}"),
             Error::Encode(m) => write!(f, "Could not encode image: {m}"),
             Error::Report(m) => write!(f, "Could not create report: {m}"),
+            Error::Panorama(m) => write!(f, "{m}"),
         }
     }
 }

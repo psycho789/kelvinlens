@@ -166,11 +166,38 @@ impl Default for InspectSettings {
     }
 }
 
+/// How serious a finding is. On the wire and in sidecars it is the number 1 (least) to 4 (most
+/// severe); out-of-range numbers are clamped on load.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(from = "u8", into = "u8")]
+pub enum SeverityLevel {
+    Low = 1,
+    Moderate = 2,
+    High = 3,
+    Severe = 4,
+}
+
+impl From<u8> for SeverityLevel {
+    fn from(n: u8) -> Self {
+        match n {
+            0 | 1 => Self::Low,
+            2 => Self::Moderate,
+            3 => Self::High,
+            _ => Self::Severe,
+        }
+    }
+}
+
+impl From<SeverityLevel> for u8 {
+    fn from(l: SeverityLevel) -> u8 {
+        l as u8
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Severity {
-    /// 1 (least) to 4 (most severe).
-    pub level: u8,
+    pub level: SeverityLevel,
     pub label: String,
     pub action: String,
 }
@@ -196,17 +223,18 @@ pub struct Finding {
 
 /// NETA MTS Table 100.18 grading of a temperature rise.
 pub fn neta_severity(delta_k: f32, basis: Basis) -> Severity {
+    use SeverityLevel::{High, Low, Moderate, Severe};
     let (level, label, action) = match basis {
         Basis::Similar => match delta_k {
-            d if d > 15.0 => (4, "Major discrepancy", "Repair immediately"),
-            d if d >= 4.0 => (3, "Probable deficiency", "Repair as time permits"),
-            _ => (1, "Possible deficiency", "Warrants investigation"),
+            d if d > 15.0 => (Severe, "Major discrepancy", "Repair immediately"),
+            d if d >= 4.0 => (High, "Probable deficiency", "Repair as time permits"),
+            _ => (Low, "Possible deficiency", "Warrants investigation"),
         },
         Basis::Ambient => match delta_k {
-            d if d > 40.0 => (4, "Major discrepancy", "Repair immediately"),
-            d if d > 20.0 => (3, "Serious deficiency", "Monitor until corrective measures can be accomplished"),
-            d if d > 10.0 => (2, "Probable deficiency", "Repair as time permits"),
-            _ => (1, "Possible deficiency", "Warrants investigation"),
+            d if d > 40.0 => (Severe, "Major discrepancy", "Repair immediately"),
+            d if d > 20.0 => (High, "Serious deficiency", "Monitor until corrective measures can be accomplished"),
+            d if d > 10.0 => (Moderate, "Probable deficiency", "Repair as time permits"),
+            _ => (Low, "Possible deficiency", "Warrants investigation"),
         },
     };
     Severity { level, label: label.into(), action: action.into() }
@@ -215,11 +243,12 @@ pub fn neta_severity(delta_k: f32, basis: Basis) -> Severity {
 /// Grading of a cold spot by thermal index; 0.7 is the usual limit for new buildings (FLIR
 /// suggests 60–80 %), and below 0.5 condensation is likely in heated rooms.
 pub fn thermal_index_severity(index: f32) -> Severity {
+    use SeverityLevel::{High, Low, Moderate, Severe};
     let (level, label, action) = match index {
-        i if i < 0.5 => (4, "Severe heat loss", "Condensation likely; repair insulation or air leak"),
-        i if i < 0.6 => (3, "Poor insulation", "Mould risk; plan repair"),
-        i if i < 0.7 => (2, "Below recommended insulation", "Investigate"),
-        _ => (1, "Minor cold area", "Monitor"),
+        i if i < 0.5 => (Severe, "Severe heat loss", "Condensation likely; repair insulation or air leak"),
+        i if i < 0.6 => (High, "Poor insulation", "Mould risk; plan repair"),
+        i if i < 0.7 => (Moderate, "Below recommended insulation", "Investigate"),
+        _ => (Low, "Minor cold area", "Monitor"),
     };
     Severity { level, label: label.into(), action: action.into() }
 }
@@ -227,12 +256,13 @@ pub fn thermal_index_severity(index: f32) -> Severity {
 /// Grading of a cold spot by how much colder it is than the reference, when no indoor and
 /// outdoor temperatures are given. These bands are a convention, not a standard.
 pub fn cold_delta_severity(delta_k: f32) -> Severity {
+    use SeverityLevel::{High, Low, Moderate, Severe};
     let d = -delta_k;
     let (level, label, action) = match d {
-        d if d > 10.0 => (4, "Major cold anomaly", "Investigate promptly"),
-        d if d > 5.0 => (3, "Significant cold anomaly", "Investigate"),
-        d if d > 2.0 => (2, "Moderate cold anomaly", "Check for moisture or air leak"),
-        _ => (1, "Minor cold anomaly", "Monitor"),
+        d if d > 10.0 => (Severe, "Major cold anomaly", "Investigate promptly"),
+        d if d > 5.0 => (High, "Significant cold anomaly", "Investigate"),
+        d if d > 2.0 => (Moderate, "Moderate cold anomaly", "Check for moisture or air leak"),
+        _ => (Low, "Minor cold anomaly", "Monitor"),
     };
     Severity { level, label: label.into(), action: action.into() }
 }
@@ -395,14 +425,25 @@ mod tests {
     }
 
     #[test]
+    fn level_serialises_as_a_number_and_clamps_on_load() {
+        assert_eq!(serde_json::to_string(&SeverityLevel::High).unwrap(), "3");
+        let load = |n: &str| serde_json::from_str::<SeverityLevel>(n);
+        assert_eq!(load("0").unwrap(), SeverityLevel::Low);
+        assert_eq!(load("1").unwrap(), SeverityLevel::Low);
+        assert_eq!(load("4").unwrap(), SeverityLevel::Severe);
+        assert_eq!(load("9").unwrap(), SeverityLevel::Severe);
+        assert!(load("-1").is_err());
+    }
+
+    #[test]
     fn neta_bands() {
-        assert_eq!(neta_severity(2.0, Basis::Similar).level, 1);
-        assert_eq!(neta_severity(4.0, Basis::Similar).level, 3);
+        assert_eq!(neta_severity(2.0, Basis::Similar).level, SeverityLevel::Low);
+        assert_eq!(neta_severity(4.0, Basis::Similar).level, SeverityLevel::High);
         assert_eq!(neta_severity(16.0, Basis::Similar).action, "Repair immediately");
-        assert_eq!(neta_severity(10.0, Basis::Ambient).level, 1);
-        assert_eq!(neta_severity(15.0, Basis::Ambient).level, 2);
-        assert_eq!(neta_severity(30.0, Basis::Ambient).level, 3);
-        assert_eq!(neta_severity(41.0, Basis::Ambient).level, 4);
+        assert_eq!(neta_severity(10.0, Basis::Ambient).level, SeverityLevel::Low);
+        assert_eq!(neta_severity(15.0, Basis::Ambient).level, SeverityLevel::Moderate);
+        assert_eq!(neta_severity(30.0, Basis::Ambient).level, SeverityLevel::High);
+        assert_eq!(neta_severity(41.0, Basis::Ambient).level, SeverityLevel::Severe);
     }
 
     /// 10×10 image at 300 K with a 3×3 hot spot at 320 K and a 2×2 cold spot at 290 K.
@@ -430,7 +471,7 @@ mod tests {
         assert_eq!((a.label.as_str(), a.hot, a.pixels, a.at), ("A1", true, 9, [3, 3]));
         assert_eq!(a.area, Shape::Box { x: 2.0, y: 2.0, w: 3.0, h: 3.0 });
         assert_eq!((a.reference_k, a.delta_k), (300.0, 25.0));
-        assert_eq!(a.severity.level, 4);
+        assert_eq!(a.severity.level, SeverityLevel::Severe);
     }
 
     #[test]
@@ -446,7 +487,7 @@ mod tests {
         let cold = f.iter().find(|f| !f.hot).unwrap();
         // (290 − 270) / (300 − 270) = 0.667
         assert!((cold.thermal_index.unwrap() - 0.6667).abs() < 1e-3);
-        assert_eq!(cold.severity.level, 2);
+        assert_eq!(cold.severity.level, SeverityLevel::Moderate);
         let strict = InspectSettings { min_pixels: 5, mode: InspectMode::Cold, ..Default::default() };
         assert!(inspect(&scene(), 10, 10, &strict).is_empty());
     }
