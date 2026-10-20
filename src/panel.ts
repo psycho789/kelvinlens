@@ -3,6 +3,7 @@
 import { api, type Alarm, type Distribution, type Formula, type Isotherm, type IsothermKind, type Param, type Params, type Range, type ResultKind, type Stats, type Unit } from "./api";
 import { SERIES_COLORS, lineChart } from "./charts";
 import { fill, h } from "./dom";
+import { hexRgb, rgbHex } from "./color";
 import { severityColor } from "./overlays";
 import { CAMERA_PALETTE, allTemplates, displayRange, isArea, isPath, loadSettings, palette, palettesFor, state, type Doc, type View } from "./state";
 import { delta, deltaFromKelvin, fromKelvin, inputValue, symbol, temp, toKelvin } from "./units";
@@ -165,15 +166,6 @@ function deltaInput(dk: number, onSet: (dk: number) => void, label: string): HTM
 
 function section(id: string, title: string, body: Node, extra?: Node): HTMLElement {
   return h("section", { class: "panel-section", id: `section-${id}` }, h("header", {}, h("h2", {}, title), extra ?? null), body);
-}
-
-function rgbHex(c: [number, number, number]): string {
-  return `#${c.map((v) => v.toString(16).padStart(2, "0")).join("")}`;
-}
-
-function hexRgb(s: string): [number, number, number] {
-  const n = parseInt(s.slice(1), 16);
-  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
 
 export function isothermText(i: IsothermKind, unit: Unit): string {

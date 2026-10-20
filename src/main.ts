@@ -7,6 +7,7 @@ import { batchDialog } from "./batch";
 import { $, debounce, errorText, h, perFrame, toast } from "./dom";
 import { encode, exportOptions, exportPng, renderExport } from "./exportImage";
 import { modal, progress, promptAt } from "./modal";
+import { basename, siblingPath, stem } from "./paths";
 import { Panel, alarmOn, gradientCss } from "./panel";
 import { paletteEditor } from "./paletteEditor";
 import { reliefDialog } from "./relief3d";
@@ -859,7 +860,7 @@ async function exportSegment(): Promise<void> {
   const doc = currentDoc();
   const v = doc?.video;
   if (!doc || !v) return;
-  const path = await pickers.save({ defaultPath: siblingPath(doc, `${stem(doc)}-frames-${v.first + 1}-${v.last + 1}.seq`), filters: [{ name: "FLIR SEQ video", extensions: ["seq"] }] });
+  const path = await pickers.save({ defaultPath: siblingPath(doc.info.path, `${stem(doc.info.name)}-frames-${v.first + 1}-${v.last + 1}.seq`), filters: [{ name: "FLIR SEQ video", extensions: ["seq"] }] });
   if (!path) return;
   try {
     const n = await api.exportSegment(doc.info.id, v.first, v.last, path);
@@ -872,7 +873,7 @@ async function exportSegment(): Promise<void> {
 async function exportVideo(): Promise<void> {
   const doc = currentDoc();
   if (!doc?.video) return;
-  const path = await pickers.save({ defaultPath: siblingPath(doc, `${stem(doc)}.avi`), filters: [{ name: "AVI video", extensions: ["avi"] }] });
+  const path = await pickers.save({ defaultPath: siblingPath(doc.info.path, `${stem(doc.info.name)}.avi`), filters: [{ name: "AVI video", extensions: ["avi"] }] });
   if (!path) return;
   const p = progress("Exporting video");
   try {
@@ -1075,16 +1076,6 @@ function setUnit(unit: Unit): void {
 
 // ---------------------------------------------------------------------------- saving & exporting
 
-function stem(doc: Doc): string {
-  return doc.info.name.replace(/\.[^.]+$/, "");
-}
-
-function siblingPath(doc: Doc, name: string): string {
-  const sep = doc.info.path.includes("\\") && !doc.info.path.includes("/") ? "\\" : "/";
-  const dir = doc.info.path.slice(0, doc.info.path.lastIndexOf(sep) + 1);
-  return dir + name;
-}
-
 function sidecarOf(doc: Doc) {
   const changed = doc.info.editable.some((k) => doc.params[k] !== doc.info.fileParams[k]);
   return {
@@ -1129,7 +1120,7 @@ async function exportImage(): Promise<void> {
   const opts = await exportOptions();
   if (!opts) return;
   const ext = opts.format === "png" ? "png" : "jpg";
-  const path = await pickers.save({ defaultPath: siblingPath(doc, `${stem(doc)}-thermal.${ext}`), filters: [{ name: ext.toUpperCase(), extensions: [ext] }] });
+  const path = await pickers.save({ defaultPath: siblingPath(doc.info.path, `${stem(doc.info.name)}-thermal.${ext}`), filters: [{ name: ext.toUpperCase(), extensions: [ext] }] });
   if (!path) return;
   try {
     const canvas = await renderExport(doc, state.unit, state.smooth, opts);
@@ -1143,7 +1134,7 @@ async function exportImage(): Promise<void> {
 async function exportCsv(): Promise<void> {
   const doc = currentDoc();
   if (!doc) return;
-  const path = await pickers.save({ defaultPath: siblingPath(doc, `${stem(doc)}-temperatures-${state.unit}.csv`), filters: [{ name: "CSV", extensions: ["csv"] }] });
+  const path = await pickers.save({ defaultPath: siblingPath(doc.info.path, `${stem(doc.info.name)}-temperatures-${state.unit}.csv`), filters: [{ name: "CSV", extensions: ["csv"] }] });
   if (!path) return;
   try {
     await api.exportCsv(doc.info.id, path, state.unit);
@@ -1156,7 +1147,7 @@ async function exportCsv(): Promise<void> {
 async function exportTiff(): Promise<void> {
   const doc = currentDoc();
   if (!doc) return;
-  const path = await pickers.save({ defaultPath: siblingPath(doc, `${stem(doc)}-radiometric.tiff`), filters: [{ name: "Radiometric TIFF (kelvin)", extensions: ["tiff", "tif"] }] });
+  const path = await pickers.save({ defaultPath: siblingPath(doc.info.path, `${stem(doc.info.name)}-radiometric.tiff`), filters: [{ name: "Radiometric TIFF (kelvin)", extensions: ["tiff", "tif"] }] });
   if (!path) return;
   try {
     await api.exportThermalTiff(doc.info.id, path);
@@ -1169,7 +1160,7 @@ async function exportTiff(): Promise<void> {
 async function exportFlirCopy(): Promise<void> {
   const doc = currentDoc();
   if (!doc?.info.flirJpeg) return;
-  const path = await pickers.save({ defaultPath: siblingPath(doc, `${stem(doc)}-kelvinlens.jpg`), filters: [{ name: "FLIR radiometric JPEG", extensions: ["jpg"] }] });
+  const path = await pickers.save({ defaultPath: siblingPath(doc.info.path, `${stem(doc.info.name)}-kelvinlens.jpg`), filters: [{ name: "FLIR radiometric JPEG", extensions: ["jpg"] }] });
   if (!path) return;
   try {
     await api.saveFlirCopy(doc.info.id, path);
@@ -1206,7 +1197,7 @@ async function exportSettings(): Promise<void> {
     formulas: doc.formulas,
     presentation: doc.presentation,
   };
-  const path = await pickers.save({ defaultPath: siblingPath(doc, `${stem(doc)}-settings.json`), filters: [{ name: "Kelvinlens settings", extensions: ["json"] }] });
+  const path = await pickers.save({ defaultPath: siblingPath(doc.info.path, `${stem(doc.info.name)}-settings.json`), filters: [{ name: "Kelvinlens settings", extensions: ["json"] }] });
   if (!path) return;
   try {
     await api.writeText(path, JSON.stringify(data, null, 2) + "\n");
@@ -1278,7 +1269,7 @@ async function createReport(): Promise<void> {
   const first = choice.docs[0]!;
   const ext = choice.info.format === "html" ? "html" : "pdf";
   const name = (choice.info.title || "report").replace(/[\\/:*?"<>|]+/g, "-");
-  const path = await pickers.save({ defaultPath: siblingPath(first, `${name}.${ext}`), filters: [{ name: ext.toUpperCase(), extensions: [ext] }] });
+  const path = await pickers.save({ defaultPath: siblingPath(first.info.path, `${name}.${ext}`), filters: [{ name: ext.toUpperCase(), extensions: [ext] }] });
   if (!path) return;
   await writeReport(choice.info, choice.docs, path);
 }
@@ -1305,12 +1296,8 @@ async function rapidReport(): Promise<void> {
   const d = new Date();
   const pad = (n: number) => String(n).padStart(2, "0");
   const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
-  const path = siblingPath(first, `${stem(first)}-report-${stamp}.${ext}`);
+  const path = siblingPath(first.info.path, `${stem(first.info.name)}-report-${stamp}.${ext}`);
   await writeReport(info, docs, path);
-}
-
-function basename(path: string): string {
-  return path.split(/[\\/]/).pop() ?? path;
 }
 
 async function pickFiles(): Promise<void> {
@@ -1429,6 +1416,14 @@ window.addEventListener("keydown", (e) => {
 
 window.addEventListener("resize", debounce(() => updateZoomLabel(), 100));
 
+// Anything not caught by a call site still reaches the user instead of only the console.
+window.addEventListener("unhandledrejection", (ev) => {
+  toast(errorText(ev.reason), "error");
+});
+window.addEventListener("error", (ev) => {
+  toast(errorText(ev.error ?? ev.message), "error");
+});
+
 void getCurrentWebview().onDragDropEvent((event) => {
   const overlay = $("#drop");
   if (event.payload.type === "enter" || event.payload.type === "over") overlay.classList.add("visible");
@@ -1452,12 +1447,12 @@ void getCurrentWindow().onCloseRequested(async (event) => {
 
 async function start(): Promise<void> {
   const settings = loadSettings();
-  if (settings.unit && UNITS.includes(settings.unit)) state.unit = settings.unit;
-  if (typeof settings.smooth === "boolean") state.smooth = settings.smooth;
-  if (typeof settings.showExtremes === "boolean") state.showExtremes = settings.showExtremes;
-  if (typeof settings.msxStrength === "number") state.msxStrength = settings.msxStrength;
-  if (Array.isArray(settings.customPalettes)) state.customPalettes = settings.customPalettes;
-  if (Array.isArray(settings.customTemplates)) state.customTemplates = settings.customTemplates;
+  if (settings.unit) state.unit = settings.unit;
+  if (settings.smooth !== undefined) state.smooth = settings.smooth;
+  if (settings.showExtremes !== undefined) state.showExtremes = settings.showExtremes;
+  if (settings.msxStrength !== undefined) state.msxStrength = settings.msxStrength;
+  if (settings.customPalettes) state.customPalettes = settings.customPalettes;
+  if (settings.customTemplates) state.customTemplates = settings.customTemplates;
   if (settings.inspect) state.inspect = { ...DEFAULT_INSPECT, ...settings.inspect };
   [state.palettes, state.builtinTemplates] = await Promise.all([api.palettes(), api.templates()]);
   if (settings.defaultPalette && palette(settings.defaultPalette, null).id === settings.defaultPalette) state.defaultPalette = settings.defaultPalette;

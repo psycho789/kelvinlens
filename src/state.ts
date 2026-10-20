@@ -20,6 +20,7 @@ import type {
   Template,
   Unit,
 } from "./api";
+import { parseSettings } from "./settings";
 
 export type Tool = "select" | ShapeKind | "text" | "sketch" | "crop";
 export type View = "thermal" | "photo" | "blend" | "msx" | "fusion";
@@ -76,6 +77,8 @@ export const DEFAULT_INSPECT: InspectSettings = {
   mode: "hot",
   referenceK: null,
   basis: "similar",
+  // 3 K: the smallest difference the Inspect panel starts with. The core's own default
+  // (analysis.rs InspectSettings::default, 1.0) only applies when a caller omits the field.
   minDelta: 3,
   minPixels: 4,
   maxFindings: 12,
@@ -177,8 +180,8 @@ export interface Settings {
   reportFormat: "pdf" | "html";
   wandTolerance: number;
   msxStrength: number;
-  inspect: InspectSettings;
-  exportOverlay: ExportOptions;
+  inspect: Partial<InspectSettings>;
+  exportOverlay: Partial<ExportOptions>;
 }
 
 export interface ExportOptions {
@@ -211,7 +214,7 @@ export const DEFAULT_EXPORT: ExportOptions = {
 
 export function loadSettings(): Partial<Settings> {
   try {
-    return JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}") as Partial<Settings>;
+    return parseSettings(JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}"));
   } catch {
     return {};
   }

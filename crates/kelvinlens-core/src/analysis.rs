@@ -157,6 +157,8 @@ impl Default for InspectSettings {
             mode: InspectMode::Hot,
             reference_k: None,
             basis: Basis::Similar,
+            // 1.0 K is the core's neutral default; the UI always sends its own value
+            // (src/state.ts DEFAULT_INSPECT, 3).
             min_delta: 1.0,
             min_pixels: 4,
             max_findings: 12,

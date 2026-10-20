@@ -6,6 +6,7 @@ import { errorText, h, toast } from "./dom";
 import { encode, renderExport } from "./exportImage";
 import { field, modal, progress } from "./modal";
 import { DEFAULT_EXPORT, displayRange, loadSettings, palettesFor, state, type Doc } from "./state";
+import { join, stem } from "./paths";
 import { fromKelvin, symbol, temp } from "./units";
 
 export interface BatchContext {
@@ -17,15 +18,6 @@ export interface BatchContext {
   writeVideo(doc: Doc, path: string): Promise<number>;
   markDirty(doc: Doc): void;
   redraw(): void;
-}
-
-function join(dir: string, name: string): string {
-  const sep = dir.includes("\\") && !dir.includes("/") ? "\\" : "/";
-  return dir.endsWith(sep) ? dir + name : dir + sep + name;
-}
-
-function stem(doc: Doc): string {
-  return doc.info.name.replace(/\.[^.]+$/, "");
 }
 
 export async function batchDialog(ctx: BatchContext): Promise<void> {
@@ -161,7 +153,7 @@ export async function batchDialog(ctx: BatchContext): Promise<void> {
         if (!(await ctx.saveEdits(doc))) failures.push(`${doc.info.name} (edits not saved)`);
       }
       if (folder) {
-        const base = join(folder, stem(doc));
+        const base = join(folder, stem(doc.info.name));
         if (opt.out.png || opt.out.jpg) {
           const canvas = await renderExport(doc, state.unit, state.smooth, exportOpts);
           if (opt.out.png) {

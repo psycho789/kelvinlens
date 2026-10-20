@@ -58,6 +58,9 @@ jobs:
         shell: bash
         run: node scripts/check-wire.mjs
 
+      - name: Test the UI helpers
+        run: npm test
+
       - name: Fetch sample thermograms
         shell: bash
         run: scripts/fetch-testdata.sh

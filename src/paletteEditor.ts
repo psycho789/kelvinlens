@@ -1,40 +1,14 @@
 // Custom palette editor: colour stops along the scale, interpolated to 256 colours the same way
 // as the built-in palettes (palette.rs `stops_to_colors`).
 import type { Palette } from "./api";
+import { hexRgb, rgbHex, stopsToColors, type Stop } from "./color";
 import { fill, h } from "./dom";
 import { field } from "./modal";
 import { gradientCss } from "./panel";
 import { saveSettings, state } from "./state";
 
-type Stop = [number, [number, number, number]];
-
-export function stopsToColors(stops: Stop[]): [number, number, number][] {
-  const s = [...stops].sort((a, b) => a[0] - b[0]);
-  if (s.length === 0) return Array.from({ length: 256 }, () => [128, 128, 128]);
-  if (s.length === 1) return Array.from({ length: 256 }, () => s[0]![1]);
-  return Array.from({ length: 256 }, (_, i) => {
-    const t = i / 255;
-    let upper = s.findIndex(([at]) => at >= t);
-    if (upper < 0) upper = s.length - 1;
-    upper = Math.max(1, upper);
-    const [a, ca] = s[upper - 1]!;
-    const [b, cb] = s[upper]!;
-    const f = b > a ? Math.min(1, Math.max(0, (t - a) / (b - a))) : 0;
-    return [0, 1, 2].map((c) => Math.round(ca[c]! + (cb[c]! - ca[c]!) * f)) as [number, number, number];
-  });
-}
-
 /** Stops stored with a custom palette so it can be edited again. */
 type CustomPalette = Palette & { stops?: Stop[] };
-
-function hex(c: [number, number, number]): string {
-  return `#${c.map((v) => v.toString(16).padStart(2, "0")).join("")}`;
-}
-
-function rgb(s: string): [number, number, number] {
-  const n = parseInt(s.slice(1), 16);
-  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
-}
 
 export function paletteEditor(): Promise<string | null> {
   return new Promise((resolve) => {
@@ -98,7 +72,7 @@ export function paletteEditor(): Promise<string | null> {
           h(
             "div",
             { class: "row" },
-            h("input", { type: "color", value: hex(c), "aria-label": "Stop colour", onchange: (e: Event) => apply(stops.map((s, k) => (k === i ? [s[0], rgb((e.target as HTMLInputElement).value)] : s))) }),
+            h("input", { type: "color", value: rgbHex(c), "aria-label": "Stop colour", onchange: (e: Event) => apply(stops.map((s, k) => (k === i ? [s[0], hexRgb((e.target as HTMLInputElement).value)] : s))) }),
             h("input", {
               type: "number",
               class: "num small-num",

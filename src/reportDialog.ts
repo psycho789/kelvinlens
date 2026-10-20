@@ -1,6 +1,7 @@
 // The "Create report" dialog: template, report fields, site conditions, format and images.
 import type { Conditions, Paper, ReportFormat, ReportInfo, Template } from "./api";
 import { h } from "./dom";
+import { parseLastReport, type LastReport } from "./settings";
 import { allTemplates, loadSettings, saveSettings, state, type Doc } from "./state";
 import { inputValue, symbol, toKelvin } from "./units";
 
@@ -27,25 +28,15 @@ export function currentTemplate(): Template {
   return all.find((t) => t.id === loadSettings().templateId) ?? all[0]!;
 }
 
-/** Remembered report fields, so Rapid report and the next dialog start from the last ones. */
-interface LastReport {
-  title: string;
-  site: string;
-  fields: Record<string, string>;
-  conditions: Conditions;
-  includePhotos: boolean;
-}
-
 const LAST_KEY = "kelvinlens.lastReport.v1";
 
 export function lastReport(): LastReport {
+  const fallback: LastReport = { title: "Thermal inspection report", site: "", fields: {}, conditions: { insideK: null, outsideK: null, humidity: null, ambientK: null, basis: "similar" }, includePhotos: true };
   try {
-    const v = JSON.parse(localStorage.getItem(LAST_KEY) ?? "null") as LastReport | null;
-    if (v) return v;
+    return parseLastReport(JSON.parse(localStorage.getItem(LAST_KEY) ?? "null"), fallback);
   } catch {
-    // fall through
+    return fallback;
   }
-  return { title: "Thermal inspection report", site: "", fields: {}, conditions: { insideK: null, outsideK: null, humidity: null, ambientK: null, basis: "similar" }, includePhotos: true };
 }
 
 function rememberReport(r: LastReport): void {

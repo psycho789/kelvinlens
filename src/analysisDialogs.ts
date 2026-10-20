@@ -4,20 +4,18 @@ import { pickers } from "./pickers";
 import { api, type Series, type Stats, type TriageRow } from "./api";
 import { SERIES_COLORS, lineChart } from "./charts";
 import { errorText, fill, h, toast } from "./dom";
+import { csvCell } from "./csv";
 import { modal } from "./modal";
+import { basename } from "./paths";
 import { state, type Doc } from "./state";
 import { fromKelvin, inputValue, symbol, temp, toKelvin } from "./units";
-
-function csvCell(s: string): string {
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-}
 
 async function saveText(defaultPath: string, name: string, ext: string, text: string): Promise<void> {
   const path = await pickers.save({ defaultPath, filters: [{ name, extensions: [ext] }] });
   if (!path) return;
   try {
     await api.writeText(path, text);
-    toast(`Saved ${path.split(/[\\/]/).pop()}`);
+    toast(`Saved ${basename(path)}`);
   } catch (e) {
     toast(errorText(e), "error");
   }
