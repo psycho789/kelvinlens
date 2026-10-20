@@ -12,7 +12,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::Unit;
-use crate::measure::Stats;
+use crate::measure::{Measurement, Stats};
 
 /// How a formula's result is shown.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,9 +48,30 @@ pub enum Value<'a> {
     Number(f64),
 }
 
+/// Evaluates `formulas` against `measurements`, whose statistics are `stats` in the same order. A
+/// label matches a measurement exactly, or else ignoring case.
+pub fn evaluate_measured(
+    formulas: &[Formula],
+    measurements: &[Measurement],
+    stats: &[Option<Stats>],
+    unit: Unit,
+) -> Vec<FormulaResult> {
+    evaluate_all(
+        formulas,
+        |name| {
+            let i = measurements
+                .iter()
+                .position(|m| m.label == name)
+                .or_else(|| measurements.iter().position(|m| m.label.eq_ignore_ascii_case(name)))?;
+            Some(Value::Measurement { stats: stats.get(i)?.as_ref() })
+        },
+        unit,
+    )
+}
+
 /// Evaluates `formulas` in order; each may use the labels of the measurements and of the
 /// formulas before it.
-pub fn evaluate_all<'a>(
+fn evaluate_all<'a>(
     formulas: &[Formula],
     measurement: impl Fn(&str) -> Option<Value<'a>>,
     unit: Unit,
@@ -402,6 +423,25 @@ mod tests {
         assert!(eval("abs(1, 2)", Unit::Celsius).unwrap_err().contains("takes 1 value"));
         assert!(eval("", Unit::Celsius).is_err());
         assert!(eval("1 2", Unit::Celsius).unwrap_err().contains("Unexpected number"));
+    }
+
+    #[test]
+    fn evaluate_measured_matches_labels_exactly_then_ignoring_case() {
+        use crate::measure::Shape;
+        let measurements = [
+            Measurement::new("Sp1", Shape::Spot { x: 0.5, y: 0.5 }),
+            Measurement::new("BX1", Shape::Spot { x: 1.5, y: 0.5 }),
+        ];
+        let stats = [Some(stats(300.15, 300.15, 300.15)), Some(stats(310.15, 310.15, 310.15))];
+        let formulas = vec![
+            Formula { label: "A".into(), expression: "Sp1".into(), kind: ResultKind::Temperature },
+            Formula { label: "B".into(), expression: "bx1 - Sp1".into(), kind: ResultKind::Difference },
+            Formula { label: "C".into(), expression: "Nope".into(), kind: ResultKind::Number },
+        ];
+        let out = evaluate_measured(&formulas, &measurements, &stats, Unit::Celsius);
+        assert!((out[0].value.unwrap() - 27.0).abs() < 1e-3);
+        assert!((out[1].value.unwrap() - 10.0).abs() < 1e-3);
+        assert!(out[2].value.is_none() && out[2].error.is_some());
     }
 
     #[test]

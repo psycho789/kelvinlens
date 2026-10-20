@@ -99,15 +99,19 @@ pub struct Photo {
 enum Model {
     /// FLIR: flyr's full model (atmosphere, IR window, reflections) re-run on the raw counts.
     Flir(Box<FlirThermogram>),
-    /// Fluke: serendip's correction `T⁴ = (Tapp⁴ − (1 − ε)·Tbg⁴) / (τ·ε)`, kept as the apparent
-    /// `Tapp⁴` per pixel so new parameters can be applied exactly.
-    Fluke { apparent4: Vec<f32> },
-    /// InfiRay P2 Pro: the camera's own model is unknown, so the same `T⁴` correction as Fluke is
-    /// applied to its stored temperatures. An approximation, without window transmission.
-    InfiRay { apparent4: Vec<f32> },
+    /// Fluke and InfiRay P2 Pro: serendip's correction `T⁴ = (Tapp⁴ − (1 − ε)·Tbg⁴) / (τ·ε)`, kept
+    /// as the apparent `Tapp⁴` per pixel so new parameters can be applied exactly. Fluke stores
+    /// the window transmission; for InfiRay the camera's own model is unknown, so the correction
+    /// is an approximation without it. `editable` lists what each format lets the user change.
+    T4Corrected { apparent4: Vec<f32>, editable: &'static [Param] },
     /// Formats that only store final temperatures.
     Fixed,
 }
+
+/// Parameters a Fluke file lets the user change (it stores the window transmission).
+const FLUKE_EDITABLE: &[Param] = &[Param::Emissivity, Param::ReflectedK, Param::WindowTransmission];
+/// Parameters an InfiRay file lets the user change.
+const INFIRAY_EDITABLE: &[Param] = &[Param::Emissivity, Param::ReflectedK];
 
 #[derive(Clone, Debug)]
 pub struct ThermalImage {
@@ -129,26 +133,47 @@ pub struct ThermalImage {
 
 impl ThermalImage {
     pub fn open(path: &Path) -> Result<ThermalImage> {
+        Self::open_with(path, true)
+    }
+
+    /// Temperatures and parameters only, without decoding the photo: for scanning many files.
+    pub fn open_temperatures(path: &Path) -> Result<ThermalImage> {
+        Self::open_with(path, false)
+    }
+
+    /// Reads `path`; `full` also decodes the photo and the FLIR lens, serial and drone details.
+    fn open_with(path: &Path, full: bool) -> Result<ThermalImage> {
         let bytes = std::fs::read(path).map_err(|e| Error::Open(e.to_string()))?;
         if infiray::is_ijpeg(&bytes) {
             return Self::from_infiray(path, &bytes);
         }
         let thermogram = Thermogram::from_bytes(&bytes).map_err(|e| Error::Open(e.to_string()))?;
-        let mut image = Self::from_thermogram(path, thermogram);
-        if image.format == Format::Flir {
+        let mut image = Self::build(path, thermogram, full);
+        if full && image.format == Format::Flir {
             image.add_flir_details(&bytes);
         }
         Ok(image)
     }
 
-    /// Temperatures and parameters only, without decoding the photo: for scanning many files.
-    pub fn open_temperatures(path: &Path) -> Result<ThermalImage> {
-        let bytes = std::fs::read(path).map_err(|e| Error::Open(e.to_string()))?;
-        if infiray::is_ijpeg(&bytes) {
-            return Self::from_infiray(path, &bytes);
+    /// An image with only temperatures: no camera details, extras or photo, and parameters that
+    /// cannot change. Each constructor overrides the fields its format provides.
+    fn bare(path: &Path, format: Format, width: usize, height: usize, kelvin: Vec<f32>) -> ThermalImage {
+        ThermalImage {
+            path: path.to_path_buf(),
+            format,
+            width,
+            height,
+            kelvin,
+            model: Model::Fixed,
+            file_params: Params::default(),
+            params: Params::default(),
+            camera: Camera::default(),
+            embedded_measurements: Vec::new(),
+            embedded_range: None,
+            embedded_palette: None,
+            photo: None,
+            pip: None,
         }
-        let thermogram = Thermogram::from_bytes(&bytes).map_err(|e| Error::Open(e.to_string()))?;
-        Ok(Self::build(path, thermogram, false))
     }
 
     /// An InfiRay IJPEG (P2 Pro). It has no visible-light photo: the saved picture is the
@@ -173,29 +198,22 @@ impl ThermalImage {
             embedded_measurements.push(Measurement::new("Centre", shape));
         }
         let embedded_palette = (j.palette == Some(3)).then(|| palette::by_id("iron")).flatten().map(|p| p.colors);
-        let apparent4 = fluke_apparent4(&j.kelvin, &j.params);
+        let apparent4 = t4_apparent4(&j.kelvin, &j.params);
         Ok(ThermalImage {
-            path: path.to_path_buf(),
-            format: Format::InfiRay,
-            width: j.width,
-            height: j.height,
-            kelvin: j.kelvin,
-            model: Model::InfiRay { apparent4 },
+            model: Model::T4Corrected { apparent4, editable: INFIRAY_EDITABLE },
             file_params: j.params,
             params: j.params,
             camera,
             embedded_measurements,
-            embedded_range: None,
             embedded_palette,
-            photo: None,
-            pip: None,
+            ..Self::bare(path, Format::InfiRay, j.width, j.height, j.kelvin)
         })
     }
 
     /// One frame of a FLIR video: an FFF block with uncompressed raw data.
     pub fn from_fff_frame(path: &Path, fff_block: &[u8]) -> Result<ThermalImage> {
         let flir = FlirThermogram::from_bytes(fff_block).ok_or_else(|| Error::Open("unreadable video frame".into()))?;
-        let mut image = Self::from_thermogram(path, Thermogram::Flir(flir));
+        let mut image = Self::build(path, Thermogram::Flir(flir), true);
         image.format = Format::Video;
         if let Some(x) = fff::camera_extras(fff_block) {
             image.apply_extras(&x);
@@ -215,22 +233,7 @@ impl ThermalImage {
         if kelvin.len() != width * height || width == 0 || height == 0 {
             return Err(Error::Open("temperature data does not match the image size".into()));
         }
-        Ok(ThermalImage {
-            path: path.to_path_buf(),
-            format,
-            width,
-            height,
-            kelvin,
-            model: Model::Fixed,
-            file_params: Params::default(),
-            params: Params::default(),
-            camera,
-            embedded_measurements: Vec::new(),
-            embedded_range: None,
-            embedded_palette: None,
-            photo: None,
-            pip: None,
-        })
+        Ok(ThermalImage { camera, ..Self::bare(path, format, width, height, kelvin) })
     }
 
     /// Lens, field of view and serial from the FLIR record, and drone attitude from DJI XMP.
@@ -261,10 +264,6 @@ impl ThermalImage {
         {
             c.date_time = Some(format_time(secs, tz));
         }
-    }
-
-    fn from_thermogram(path: &Path, t: Thermogram) -> ThermalImage {
-        Self::build(path, t, true)
     }
 
     fn build(path: &Path, t: Thermogram, with_photo: bool) -> ThermalImage {
@@ -304,8 +303,8 @@ impl ThermalImage {
         let (format, model) = match t {
             Thermogram::Flir(f) => (Format::Flir, Model::Flir(Box::new(f))),
             Thermogram::Fluke(_) => {
-                let apparent4 = fluke_apparent4(&kelvin, &file_params);
-                (Format::Fluke, Model::Fluke { apparent4 })
+                let apparent4 = t4_apparent4(&kelvin, &file_params);
+                (Format::Fluke, Model::T4Corrected { apparent4, editable: FLUKE_EDITABLE })
             }
             Thermogram::Hti(_) => (Format::Hti, Model::Fixed),
             Thermogram::Irg(_) => (Format::Irg, Model::Fixed),
@@ -314,11 +313,6 @@ impl ThermalImage {
         };
 
         ThermalImage {
-            path: path.to_path_buf(),
-            format,
-            width,
-            height,
-            kelvin,
             model,
             file_params,
             params: file_params,
@@ -328,6 +322,7 @@ impl ThermalImage {
             embedded_palette,
             photo,
             pip,
+            ..Self::bare(path, format, width, height, kelvin)
         }
     }
 
@@ -381,8 +376,7 @@ impl ThermalImage {
     pub fn editable(&self) -> Vec<Param> {
         match self.model {
             Model::Flir(_) => Param::ALL.to_vec(),
-            Model::Fluke { .. } => vec![Param::Emissivity, Param::ReflectedK, Param::WindowTransmission],
-            Model::InfiRay { .. } => vec![Param::Emissivity, Param::ReflectedK],
+            Model::T4Corrected { editable, .. } => editable.to_vec(),
             Model::Fixed => Vec::new(),
         }
     }
@@ -420,8 +414,8 @@ impl ThermalImage {
                 // Non-physical results (negative radiance) come out as NaN or ±inf; keep NaN only.
                 self.kelvin = kelvin.into_iter().map(|v| if v.is_finite() { v } else { f32::NAN }).collect();
             }
-            Model::Fluke { apparent4 } | Model::InfiRay { apparent4 } => {
-                self.kelvin = fluke_object_kelvin(apparent4, &merged);
+            Model::T4Corrected { apparent4, .. } => {
+                self.kelvin = t4_object_kelvin(apparent4, &merged);
             }
             Model::Fixed => unreachable!("checked above"),
         }
@@ -515,8 +509,9 @@ fn exif_date(s: &str) -> String {
     }
 }
 
-/// Fluke files keep transmission implicit at 1.0 when they store none (serendip does the same).
-fn fluke_terms(p: &Params) -> (f32, f32, f32) {
+/// Fluke and InfiRay files keep transmission implicit at 1.0 when they store none (serendip does
+/// the same).
+fn t4_terms(p: &Params) -> (f32, f32, f32) {
     let emissivity = p.emissivity.unwrap_or(1.0);
     let background = p.reflected_k.unwrap_or(293.15);
     let transmission = p.window_transmission.unwrap_or(1.0);
@@ -524,13 +519,13 @@ fn fluke_terms(p: &Params) -> (f32, f32, f32) {
 }
 
 /// Inverts serendip's correction: `Tapp⁴ = τ·ε·T⁴ + (1 − ε)·Tbg⁴`.
-fn fluke_apparent4(kelvin: &[f32], p: &Params) -> Vec<f32> {
-    let (e, bg, tau) = fluke_terms(p);
+fn t4_apparent4(kelvin: &[f32], p: &Params) -> Vec<f32> {
+    let (e, bg, tau) = t4_terms(p);
     kelvin.iter().map(|t| tau * e * t.powi(4) + (1.0 - e) * bg.powi(4)).collect()
 }
 
-fn fluke_object_kelvin(apparent4: &[f32], p: &Params) -> Vec<f32> {
-    let (e, bg, tau) = fluke_terms(p);
+fn t4_object_kelvin(apparent4: &[f32], p: &Params) -> Vec<f32> {
+    let (e, bg, tau) = t4_terms(p);
     apparent4
         .iter()
         .map(|a| {
@@ -574,18 +569,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fluke_inversion_round_trips_and_matches_forward_formula() {
+    fn t4_inversion_round_trips_and_matches_forward_formula() {
         let file = Params { emissivity: Some(0.95), reflected_k: Some(293.15), ..Default::default() };
         let kelvin = vec![250.0, 300.0, 350.0];
-        let apparent4 = fluke_apparent4(&kelvin, &file);
-        let same = fluke_object_kelvin(&apparent4, &file);
+        let apparent4 = t4_apparent4(&kelvin, &file);
+        let same = t4_object_kelvin(&apparent4, &file);
         for (a, b) in kelvin.iter().zip(&same) {
             assert!((a - b).abs() < 0.01, "{a} vs {b}");
         }
 
         // serendip's forward formula applied to the apparent temperature with new parameters.
         let new = Params { emissivity: Some(0.7), reflected_k: Some(310.0), window_transmission: Some(0.9), ..file };
-        let changed = fluke_object_kelvin(&apparent4, &new);
+        let changed = t4_object_kelvin(&apparent4, &new);
         for (a4, t) in apparent4.iter().zip(&changed) {
             let forward = ((a4 - (1.0 - 0.7) * 310f32.powi(4)) / (0.9 * 0.7)).powf(0.25);
             assert!((forward - t).abs() < 0.01);
@@ -593,10 +588,32 @@ mod tests {
     }
 
     #[test]
-    fn fluke_non_physical_is_nan() {
+    fn t4_non_physical_is_nan() {
         let p = Params { emissivity: Some(0.1), reflected_k: Some(400.0), ..Default::default() };
-        let out = fluke_object_kelvin(&[200f32.powi(4)], &p);
+        let out = t4_object_kelvin(&[200f32.powi(4)], &p);
         assert!(out[0].is_nan());
+    }
+
+    #[test]
+    fn t4_models_expose_their_own_editable_params() {
+        let params = Params { emissivity: Some(0.95), reflected_k: Some(293.15), ..Default::default() };
+        let kelvin = vec![300.0f32; 4];
+        let make = |format, editable| ThermalImage {
+            model: Model::T4Corrected { apparent4: t4_apparent4(&kelvin, &params), editable },
+            file_params: params,
+            params,
+            ..ThermalImage::bare(Path::new("x.jpg"), format, 2, 2, kelvin.clone())
+        };
+        let mut fluke = make(Format::Fluke, FLUKE_EDITABLE);
+        let mut infiray = make(Format::InfiRay, INFIRAY_EDITABLE);
+        assert_eq!(fluke.editable(), vec![Param::Emissivity, Param::ReflectedK, Param::WindowTransmission]);
+        assert_eq!(infiray.editable(), vec![Param::Emissivity, Param::ReflectedK]);
+        // Same data and the same correction: an emissivity change gives identical temperatures.
+        let new = Params { emissivity: Some(0.7), ..Default::default() };
+        fluke.set_params(&new).unwrap();
+        infiray.set_params(&new).unwrap();
+        assert_eq!(fluke.kelvin(), infiray.kelvin());
+        assert!(fluke.kelvin()[0] > 300.0);
     }
 
     #[test]

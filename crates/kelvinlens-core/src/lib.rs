@@ -7,6 +7,7 @@
 
 pub mod analysis;
 pub mod avi;
+mod bytes;
 mod error;
 pub mod export;
 pub mod fff;
@@ -14,6 +15,7 @@ pub mod folder;
 pub mod formula;
 pub mod geo;
 pub mod infiray;
+mod jpeg;
 pub mod measure;
 pub mod palette;
 pub mod panorama;
@@ -25,6 +27,7 @@ pub mod sidecar;
 pub mod thermogram;
 pub mod unit;
 pub mod video;
+mod xml;
 
 pub use error::{Error, Result};
 pub use measure::{Measurement, Shape, Stats};

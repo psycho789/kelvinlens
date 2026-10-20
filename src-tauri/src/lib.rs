@@ -11,7 +11,7 @@ use std::sync::Mutex;
 use kelvinlens_core::analysis::{self, Finding, InspectSettings, Isotherm};
 use kelvinlens_core::formula::{self, Formula, FormulaResult};
 use kelvinlens_core::measure::ProfilePoint;
-use kelvinlens_core::render::{self, Fusion, Look};
+use kelvinlens_core::render::{self, FuseRequest, Fusion, Look};
 use kelvinlens_core::report::{self, ReportImage, ReportInfo, Template};
 use kelvinlens_core::sidecar::{self, Annotation, Presentation, Sidecar};
 use kelvinlens_core::thermogram::{Camera, Pip};
@@ -263,14 +263,12 @@ async fn coverage(
     state: State<'_, AppState>,
 ) -> CmdResult<Vec<Option<f32>>> {
     with_image(&state, id, |img| {
-        let matchers: Vec<_> = isotherms.iter().map(|i| i.kind.matcher()).collect();
+        let any = analysis::any_matcher(&isotherms);
         Ok(shapes
             .iter()
             .map(|s| {
-                if !s.is_area() || matchers.is_empty() {
-                    return None;
-                }
-                measure::coverage(img.kelvin(), img.width(), img.height(), s, |k| matchers.iter().any(|m| m(k)))
+                let any = any.as_ref().filter(|_| s.is_area())?;
+                measure::coverage(img.kelvin(), img.width(), img.height(), s, any)
             })
             .collect())
     })
@@ -287,24 +285,14 @@ async fn evaluate_formulas(
     with_image(&state, id, |img| {
         let stats: Vec<Option<Stats>> =
             measurements.iter().map(|m| measure::stats(img.kelvin(), img.width(), img.height(), &m.shape)).collect();
-        Ok(formula::evaluate_all(
-            &formulas,
-            |name| {
-                let i = measurements
-                    .iter()
-                    .position(|m| m.label == name)
-                    .or_else(|| measurements.iter().position(|m| m.label.eq_ignore_ascii_case(name)))?;
-                Some(formula::Value::Measurement { stats: stats[i].as_ref() })
-            },
-            unit,
-        ))
+        Ok(formula::evaluate_measured(&formulas, &measurements, &stats, unit))
     })
 }
 
 /// The thermal image coloured with `look`, as RGBA (4 bytes per pixel).
 #[tauri::command]
 async fn render(id: u32, look: Look, state: State<'_, AppState>) -> CmdResult<Response> {
-    let look = Look { palette: look.palette.normalized(), ..look };
+    let look = look.normalized();
     with_image(&state, id, |img| {
         Ok(Response::new(render::rgba(&render::rgb(img.kelvin(), img.width(), img.height(), &look))))
     })
@@ -321,20 +309,20 @@ async fn fuse(
     align: Option<[f32; 3]>,
     state: State<'_, AppState>,
 ) -> CmdResult<Response> {
-    let look = Look { palette: look.palette.normalized(), ..look };
+    let look = look.normalized();
     with_image(&state, id, |img| {
         let photo = img.photo().ok_or("This image has no photo")?;
-        let c = render::fuse(
-            img.kelvin(),
-            img.width(),
-            img.height(),
-            &look,
+        let c = render::fuse(&FuseRequest {
+            kelvin: img.kelvin(),
+            width: img.width(),
+            height: img.height(),
+            look: &look,
             photo,
-            img.pip(),
+            pip: img.pip(),
             fusion,
-            max_width.clamp(64, 4096),
-            align.unwrap_or(render::NO_ALIGNMENT),
-        );
+            max_width: max_width.clamp(64, 4096),
+            align: align.unwrap_or(render::NO_ALIGNMENT),
+        });
         let mut out = Vec::with_capacity(40 + c.rgb.len() / 3 * 4);
         out.extend_from_slice(&(c.width as u32).to_le_bytes());
         out.extend_from_slice(&(c.height as u32).to_le_bytes());
@@ -451,7 +439,7 @@ async fn stitch(ids: Vec<u32>, offsets: Vec<Option<[i64; 2]>>, state: State<'_, 
             .iter()
             .map(|i| panorama::Tile { kelvin: i.kelvin(), width: i.width(), height: i.height() })
             .collect();
-        let s = panorama::stitch(&tiles, &offsets, &Default::default())?;
+        let s = panorama::stitch(&tiles, &offsets)?;
         let first = images[0];
         let dir = first.path().parent().map(Path::to_path_buf).unwrap_or_default();
         let stem = first.path().file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "image".into());
@@ -683,7 +671,7 @@ fn extension(path: &str) -> Option<String> {
 /// Writes the staged bytes to an image file the user chose in a save dialog.
 #[tauri::command]
 async fn write_staged(path: String, state: State<'_, AppState>) -> CmdResult<()> {
-    if !matches!(extension(&path).as_deref(), Some("png" | "jpg" | "jpeg")) {
+    if !folder::has_extension(Path::new(&path), &["png", "jpg", "jpeg"]) {
         return Err("Exported images must be saved as .png or .jpg".into());
     }
     let bytes = state.lock().map_err(err)?.staged.take().ok_or("Nothing to save")?;
@@ -693,7 +681,7 @@ async fn write_staged(path: String, state: State<'_, AppState>) -> CmdResult<()>
 /// Writes text the UI produced (settings, tables, maps) to a file the user chose.
 #[tauri::command]
 async fn write_text(path: String, text: String) -> CmdResult<()> {
-    if !matches!(extension(&path).as_deref(), Some("json" | "csv" | "kml" | "geojson" | "txt")) {
+    if !folder::has_extension(Path::new(&path), &["json", "csv", "kml", "geojson", "txt"]) {
         return Err("This kind of file cannot be written here".into());
     }
     std::fs::write(&path, text).map_err(err)
@@ -702,7 +690,7 @@ async fn write_text(path: String, text: String) -> CmdResult<()> {
 /// Reads a settings or template file the user picked.
 #[tauri::command]
 async fn read_text(path: String) -> CmdResult<String> {
-    if extension(&path).as_deref() != Some("json") {
+    if !folder::has_extension(Path::new(&path), &["json"]) {
         return Err("Only .json settings files can be imported".into());
     }
     let meta = std::fs::metadata(&path).map_err(err)?;
@@ -830,7 +818,7 @@ async fn make_report(
             let image = store.images.get(&item.id).ok_or("An image in the report is no longer open")?;
             images.push(ReportImage {
                 image,
-                look: Look { palette: item.look.palette.normalized(), ..item.look },
+                look: item.look.normalized(),
                 measurements: item.measurements,
                 notes: item.notes,
                 formulas: item.formulas,

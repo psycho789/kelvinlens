@@ -8,6 +8,11 @@
 
 use std::collections::BTreeMap;
 
+use base64::Engine as _;
+use base64::alphabet;
+use base64::engine::DecodePaddingMode;
+use base64::engine::general_purpose::{GeneralPurpose, GeneralPurposeConfig, STANDARD};
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use typst::foundations::{Array, Bytes, Dict, Value};
@@ -453,7 +458,7 @@ const SERIES_COLORS: [&str; 8] =
 fn prepare(info: &ReportInfo, images: &[ReportImage], generator: &str) -> Result<Prepared> {
     let template = info.template.clone().unwrap_or_default();
     let unit = info.unit;
-    let t = |k: f32| format!("{:.1} {}", unit.from_kelvin(k), unit.symbol());
+    let t = |k: f32| unit.format(k);
 
     let mut prepared_images = Vec::with_capacity(images.len());
     for (i, item) in images.iter().enumerate() {
@@ -575,52 +580,37 @@ fn decode_logo(s: &str) -> Result<Vec<u8>> {
 
 use image::ImageEncoder as _;
 
+/// Standard alphabet without padding, as the old hand-written decoder behaved once it had
+/// removed every `=`: unused trailing bits are accepted.
+const BASE64_UNPADDED: GeneralPurpose = GeneralPurpose::new(
+    &alphabet::STANDARD,
+    GeneralPurposeConfig::new()
+        .with_decode_padding_mode(DecodePaddingMode::RequireNone)
+        .with_decode_allow_trailing_bits(true),
+);
+
+/// Decodes base64 as the previous hand-written decoder did, so templates saved or imported
+/// earlier still work: standard or URL-safe alphabet, whitespace and every `=` ignored; `None`
+/// if invalid.
 fn base64_decode(s: &str) -> Option<Vec<u8>> {
-    let val = |c: u8| -> Option<u32> {
-        Some(match c {
-            b'A'..=b'Z' => c - b'A',
-            b'a'..=b'z' => c - b'a' + 26,
-            b'0'..=b'9' => c - b'0' + 52,
-            b'+' | b'-' => 62,
-            b'/' | b'_' => 63,
-            _ => return None,
-        } as u32)
-    };
-    let clean: Vec<u8> = s.bytes().filter(|c| !c.is_ascii_whitespace() && *c != b'=').collect();
-    let mut out = Vec::with_capacity(clean.len() * 3 / 4);
-    for chunk in clean.chunks(4) {
-        let mut acc = 0u32;
-        for (i, &c) in chunk.iter().enumerate() {
-            acc |= val(c)? << (18 - 6 * i);
-        }
-        let bytes = [(acc >> 16) as u8, (acc >> 8) as u8, acc as u8];
-        match chunk.len() {
-            4 => out.extend_from_slice(&bytes),
-            3 => out.extend_from_slice(&bytes[..2]),
-            2 => out.push(bytes[0]),
-            _ => return None,
-        }
-    }
-    Some(out)
+    let clean: String = s
+        .chars()
+        .filter(|c| !c.is_ascii_whitespace() && *c != '=')
+        .map(|c| match c {
+            '-' => '+',
+            '_' => '/',
+            c => c,
+        })
+        .collect();
+    BASE64_UNPADDED.decode(clean).ok()
 }
 
 pub fn base64_encode(bytes: &[u8]) -> String {
-    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for c in bytes.chunks(3) {
-        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
-        out.push(A[(n >> 18) as usize & 63] as char);
-        out.push(A[(n >> 12) as usize & 63] as char);
-        out.push(if c.len() > 1 { A[(n >> 6) as usize & 63] as char } else { '=' });
-        out.push(if c.len() > 2 { A[n as usize & 63] as char } else { '=' });
-    }
-    out
+    STANDARD.encode(bytes)
 }
 
 fn signed(unit: Unit, dk: f32) -> String {
-    let v = unit.delta_from_kelvin(dk);
-    let sym = if unit == Unit::Kelvin { "K" } else { unit.symbol() };
-    format!("{}{v:.1} {sym}", if v >= 0.0 { "+" } else { "" })
+    unit.format_signed(f64::from(unit.delta_from_kelvin(dk)))
 }
 
 fn hex(c: [u8; 3]) -> String {
@@ -628,7 +618,7 @@ fn hex(c: [u8; 3]) -> String {
 }
 
 fn isotherm_text(i: &Isotherm, unit: Unit) -> String {
-    let t = |k: f32| format!("{:.1} {}", unit.from_kelvin(k), unit.symbol());
+    let t = |k: f32| unit.format(k);
     match i.kind {
         IsothermKind::Above { t: k } => format!("Above {}", t(k)),
         IsothermKind::Below { t: k } => format!("Below {}", t(k)),
@@ -653,7 +643,7 @@ fn prepare_image(number: usize, item: &ReportImage, info: &ReportInfo, template:
     let img = item.image;
     let (w, h) = (img.width(), img.height());
     let unit = info.unit;
-    let fmt = |k: f32| format!("{:.1} {}", unit.from_kelvin(k), unit.symbol());
+    let fmt = |k: f32| unit.format(k);
     let kelvin = img.kelvin();
 
     let thermal_png = export::png(&render::rgb(kelvin, w, h, &item.look), w, h)?;
@@ -663,7 +653,7 @@ fn prepare_image(number: usize, item: &ReportImage, info: &ReportInfo, template:
         _ => None,
     };
 
-    let isotherm_matchers: Vec<_> = item.look.isotherms.iter().map(|i| i.kind.matcher()).collect();
+    let any_isotherm = analysis::any_matcher(&item.look.isotherms);
     let stats: Vec<_> = item.measurements.iter().map(|m| measure::stats(kelvin, w, h, &m.shape)).collect();
     let measurements: Vec<MeasurementRow> = item
         .measurements
@@ -676,12 +666,11 @@ fn prepare_image(number: usize, item: &ReportImage, info: &ReportInfo, template:
                 Some(false) => "OK",
                 None => "",
             };
-            let coverage = if m.shape.is_area() && !isotherm_matchers.is_empty() {
-                measure::coverage(kelvin, w, h, &m.shape, |k| isotherm_matchers.iter().any(|f| f(k)))
+            let coverage = match &any_isotherm {
+                Some(any) if m.shape.is_area() => measure::coverage(kelvin, w, h, &m.shape, any)
                     .map(|c| format!("{:.1} %", c * 100.0))
-                    .unwrap_or_default()
-            } else {
-                String::new()
+                    .unwrap_or_default(),
+                _ => String::new(),
             };
             let outline = match m.shape {
                 Shape::Wand { .. } => measure::outline(&measure::pixels(&m.shape, kelvin, w, h), w, h),
@@ -701,18 +690,7 @@ fn prepare_image(number: usize, item: &ReportImage, info: &ReportInfo, template:
         })
         .collect();
 
-    let results = formula::evaluate_all(
-        &item.formulas,
-        |name| {
-            let i = item
-                .measurements
-                .iter()
-                .position(|m| m.label == name)
-                .or_else(|| item.measurements.iter().position(|m| m.label.eq_ignore_ascii_case(name)))?;
-            Some(formula::Value::Measurement { stats: stats[i].as_ref() })
-        },
-        unit,
-    );
+    let results = formula::evaluate_measured(&item.formulas, &item.measurements, &stats, unit);
     let formulas = item
         .formulas
         .iter()
@@ -720,14 +698,8 @@ fn prepare_image(number: usize, item: &ReportImage, info: &ReportInfo, template:
         .map(|(f, r)| {
             let value = match (r.value, r.error) {
                 (Some(v), _) => match f.kind {
-                    ResultKind::Temperature => format!("{v:.1} {}", unit.symbol()),
-                    ResultKind::Difference => {
-                        format!(
-                            "{}{v:.1} {}",
-                            if v >= 0.0 { "+" } else { "" },
-                            if unit == Unit::Kelvin { "K" } else { unit.symbol() }
-                        )
-                    }
+                    ResultKind::Temperature => unit.format_value(v),
+                    ResultKind::Difference => unit.format_signed(v),
                     ResultKind::Number => format!("{v:.3}"),
                 },
                 (None, Some(e)) => format!("Error: {e}"),
@@ -1068,7 +1040,7 @@ fn trend_charts(images: &[ReportImage], unit: Unit) -> Vec<Chart> {
 
 /// Rows of [name, value used, value in file] for the parameters the format records.
 fn param_rows(used: &Params, file: &Params, editable: &[Param], unit: Unit) -> Vec<[String; 3]> {
-    let temp = |k: f32| format!("{:.1} {}", unit.from_kelvin(k), unit.symbol());
+    let temp = |k: f32| unit.format(k);
     let show = |p: Param, v: f32| match p {
         Param::Emissivity | Param::WindowTransmission => format!("{v:.2}"),
         Param::ReflectedK | Param::AtmosphereK | Param::WindowK => temp(v),
@@ -1179,6 +1151,18 @@ mod tests {
     fn json_numbers_keep_integer_type() {
         assert_eq!(to_typst(&json!(3)), Value::Int(3));
         assert_eq!(to_typst(&json!(2.5)), Value::Float(2.5));
+    }
+
+    #[test]
+    fn base64_decoder_keeps_its_leniency() {
+        assert_eq!(base64_decode("TWE").unwrap(), b"Ma");
+        assert_eq!(base64_decode("TW\nE=\r\n").unwrap(), b"Ma");
+        assert_eq!(base64_decode("").unwrap(), b"");
+        // Kept from the previous decoder: URL-safe characters and stray `=` are accepted.
+        assert_eq!(base64_decode("-_-_").unwrap(), base64_decode("+/+/").unwrap());
+        assert_eq!(base64_decode("TWE==").unwrap(), b"Ma");
+        assert_eq!(base64_decode("TWFu=").unwrap(), b"Man");
+        assert!(base64_decode("TWFuT").is_none());
     }
 
     #[test]

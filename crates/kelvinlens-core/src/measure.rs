@@ -144,16 +144,8 @@ pub struct Stats {
 
 /// The pixels a shape covers, clipped to the image. `kelvin` is only read by the magic wand.
 pub fn pixels(shape: &Shape, kelvin: &[f32], width: usize, height: usize) -> Vec<[usize; 2]> {
-    let inside = |x: f32, y: f32| x >= 0.0 && y >= 0.0 && (x as usize) < width && (y as usize) < height;
-
     match shape {
-        &Shape::Spot { x, y } => {
-            if inside(x, y) {
-                vec![[x as usize, y as usize]]
-            } else {
-                Vec::new()
-            }
-        }
+        &Shape::Spot { x, y } => centre(width, height, x, y),
         &Shape::Box { x, y, w, h } => {
             let (x0, x1) = (x.min(x + w), x.max(x + w));
             let (y0, y1) = (y.min(y + h), y.max(y + h));
@@ -195,11 +187,10 @@ pub fn pixels(shape: &Shape, kelvin: &[f32], width: usize, height: usize) -> Vec
 fn path_pixels(points: &[[f32; 2]], width: usize, height: usize) -> Vec<[usize; 2]> {
     let mut out: Vec<[usize; 2]> = Vec::new();
     let mut push = |x: f32, y: f32| {
-        if x >= 0.0 && y >= 0.0 && (x as usize) < width && (y as usize) < height {
-            let c = [x as usize, y as usize];
-            if !out.contains(&c) {
-                out.push(c);
-            }
+        if let Some(c) = pixel_at(width, height, x, y)
+            && !out.contains(&c)
+        {
+            out.push(c);
         }
     };
     if let [p] = points {
@@ -232,10 +223,10 @@ fn point_in_polygon(points: &[[f32; 2]], x: f32, y: f32) -> bool {
 
 /// 4-connected flood fill from the seed pixel over finite temperatures within `tolerance`.
 fn wand(kelvin: &[f32], width: usize, height: usize, x: f32, y: f32, tolerance: f32) -> Vec<[usize; 2]> {
-    if !(x >= 0.0 && y >= 0.0 && (x as usize) < width && (y as usize) < height) || kelvin.len() != width * height {
+    let Some([sx, sy]) = pixel_at(width, height, x, y) else { return Vec::new() };
+    if kelvin.len() != width * height {
         return Vec::new();
     }
-    let (sx, sy) = (x as usize, y as usize);
     let seed = kelvin[sy * width + sx];
     if !seed.is_finite() {
         return Vec::new();
@@ -281,11 +272,12 @@ fn area(width: usize, height: usize, bounds: [f32; 4], test: impl Fn(f32, f32) -
 
 /// A tool smaller than a pixel measures the pixel under its centre.
 fn centre(width: usize, height: usize, x: f32, y: f32) -> Vec<[usize; 2]> {
-    if x >= 0.0 && y >= 0.0 && (x as usize) < width && (y as usize) < height {
-        vec![[x as usize, y as usize]]
-    } else {
-        Vec::new()
-    }
+    pixel_at(width, height, x, y).into_iter().collect()
+}
+
+/// The pixel containing the continuous point `(x, y)`, or `None` outside the image or for NaN.
+fn pixel_at(width: usize, height: usize, x: f32, y: f32) -> Option<[usize; 2]> {
+    (x >= 0.0 && y >= 0.0 && (x as usize) < width && (y as usize) < height).then_some([x as usize, y as usize])
 }
 
 /// Statistics over the shape's pixels, or `None` if it covers no finite temperature.
@@ -354,13 +346,7 @@ pub fn profile(kelvin: &[f32], width: usize, height: usize, shape: &Shape) -> Ve
         Shape::Polyline { points } => points.clone(),
         _ => return Vec::new(),
     };
-    let sample = |x: f32, y: f32| {
-        if x >= 0.0 && y >= 0.0 && (x as usize) < width && (y as usize) < height {
-            kelvin[y as usize * width + x as usize]
-        } else {
-            f32::NAN
-        }
-    };
+    let sample = |x: f32, y: f32| pixel_at(width, height, x, y).map_or(f32::NAN, |[px, py]| kelvin[py * width + px]);
     let mut out = Vec::new();
     let mut travelled = 0.0f32;
     for (i, seg) in points.windows(2).enumerate() {
@@ -457,6 +443,16 @@ mod tests {
         let mut p = pixels(shape, &image(), 4, 3);
         p.sort();
         p
+    }
+
+    #[test]
+    fn pixel_at_accepts_only_points_inside_the_image() {
+        assert_eq!(pixel_at(4, 3, 0.0, 0.0), Some([0, 0]));
+        assert_eq!(pixel_at(4, 3, 3.99, 2.5), Some([3, 2]));
+        assert_eq!(pixel_at(4, 3, 4.0, 1.0), None);
+        assert_eq!(pixel_at(4, 3, 1.0, 3.0), None);
+        assert_eq!(pixel_at(4, 3, -0.1, 1.0), None);
+        assert_eq!(pixel_at(4, 3, f32::NAN, 1.0), None);
     }
 
     #[test]

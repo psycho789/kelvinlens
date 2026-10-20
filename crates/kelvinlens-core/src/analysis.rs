@@ -77,6 +77,15 @@ impl IsothermKind {
     }
 }
 
+/// One predicate that is true where any of `isotherms` matches; `None` when there are none.
+pub fn any_matcher(isotherms: &[Isotherm]) -> Option<impl Fn(f32) -> bool + use<>> {
+    if isotherms.is_empty() {
+        return None;
+    }
+    let matchers: Vec<_> = isotherms.iter().map(|i| i.kind.matcher()).collect();
+    Some(move |k: f32| matchers.iter().any(|m| m(k)))
+}
+
 /// Saturation vapour pressure over water in hPa (Magnus, Alduchov & Eskridge 1996).
 pub fn saturation_hpa(celsius: f32) -> f32 {
     6.1094 * (17.625 * celsius / (celsius + 243.04)).exp()
@@ -375,6 +384,14 @@ mod tests {
         assert!(above(300.5) && !above(300.0));
         let iv = IsothermKind::Interval { lo: 310.0, hi: 300.0 }.matcher();
         assert!(iv(300.0) && iv(305.0) && iv(310.0) && !iv(310.1));
+    }
+
+    #[test]
+    fn any_matcher_combines_isotherms() {
+        let iso = |kind| Isotherm { kind, color: [255, 0, 0], opacity: 1.0 };
+        assert!(any_matcher(&[]).is_none());
+        let any = any_matcher(&[iso(IsothermKind::Above { t: 310.0 }), iso(IsothermKind::Below { t: 280.0 })]).unwrap();
+        assert!(any(311.0) && any(270.0) && !any(295.0) && !any(f32::NAN));
     }
 
     #[test]

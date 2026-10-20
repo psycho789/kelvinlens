@@ -417,7 +417,7 @@ fn panorama_of_overlapping_crops_rebuilds_the_scene() {
         panorama::Tile { kelvin: &b, width: 300, height: 360 },
         panorama::Tile { kelvin: &cc, width: 300, height: 360 },
     ];
-    let s = panorama::stitch(&tiles, &[], &Default::default()).unwrap();
+    let s = panorama::stitch(&tiles, &[]).unwrap();
     assert_eq!(s.offsets, vec![[0, 20], [210, 50], [330, 0]]);
     for y in 0..s.height {
         for x in 0..s.width {

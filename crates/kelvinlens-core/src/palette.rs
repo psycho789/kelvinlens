@@ -94,8 +94,8 @@ pub fn from_stops(id: &str, name: &str, stops: &[(f32, [u8; 3])]) -> Palette {
 
 pub fn stops_to_colors(stops: &[(f32, [u8; 3])]) -> Vec<[u8; 3]> {
     match stops {
-        [] => return vec![NO_DATA; 256],
-        [(_, c)] => return vec![*c; 256],
+        [] => return filled(None),
+        [(_, c)] => return filled(Some(*c)),
         _ => {}
     }
     (0..256)
@@ -104,9 +104,20 @@ pub fn stops_to_colors(stops: &[(f32, [u8; 3])]) -> Vec<[u8; 3]> {
             let upper = stops.iter().position(|(at, _)| *at >= t).unwrap_or(stops.len() - 1).max(1);
             let ((a, ca), (b, cb)) = (stops[upper - 1], stops[upper]);
             let f = if b > a { ((t - a) / (b - a)).clamp(0.0, 1.0) } else { 0.0 };
-            [0, 1, 2].map(|c| (ca[c] as f32 + (cb[c] as f32 - ca[c] as f32) * f).round() as u8)
+            lerp(ca, cb, f)
         })
         .collect()
+}
+
+/// 256 copies of `colour`, or of `NO_DATA` when there is none: what a table with fewer than two
+/// colours expands to.
+fn filled(colour: Option<[u8; 3]>) -> Vec<[u8; 3]> {
+    vec![colour.unwrap_or(NO_DATA); 256]
+}
+
+/// The colour a fraction `f` (0-1) of the way from `a` to `b`, rounded per channel.
+fn lerp(a: [u8; 3], b: [u8; 3], f: f32) -> [u8; 3] {
+    [0, 1, 2].map(|c| (a[c] as f32 + (b[c] as f32 - a[c] as f32) * f).round() as u8)
 }
 
 fn from_table(id: &str, name: &str, table: &[[f32; 3]; 256]) -> Palette {
@@ -116,14 +127,11 @@ fn from_table(id: &str, name: &str, table: &[[f32; 3]; 256]) -> Palette {
 
 /// Stretches or shrinks any colour table to 256 entries by linear interpolation.
 pub fn resample(colors: &[[u8; 3]]) -> Vec<[u8; 3]> {
-    if colors.len() == 256 || colors.len() < 2 {
-        return if colors.is_empty() {
-            vec![NO_DATA; 256]
-        } else if colors.len() == 1 {
-            vec![colors[0]; 256]
-        } else {
-            colors.to_vec()
-        };
+    if colors.len() == 256 {
+        return colors.to_vec();
+    }
+    if colors.len() < 2 {
+        return filled(colors.first().copied());
     }
     let n = colors.len() - 1;
     (0..256)
@@ -132,7 +140,7 @@ pub fn resample(colors: &[[u8; 3]]) -> Vec<[u8; 3]> {
             let lo = (pos.floor() as usize).min(n);
             let hi = (lo + 1).min(n);
             let f = pos - lo as f32;
-            [0, 1, 2].map(|c| (colors[lo][c] as f32 + (colors[hi][c] as f32 - colors[lo][c] as f32) * f).round() as u8)
+            lerp(colors[lo], colors[hi], f)
         })
         .collect()
 }
@@ -154,6 +162,14 @@ pub fn bar(palette: &Palette, width: usize) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tables_with_fewer_than_two_colours_are_filled() {
+        assert_eq!(resample(&[]), vec![NO_DATA; 256]);
+        assert_eq!(resample(&[[1, 2, 3]]), vec![[1, 2, 3]; 256]);
+        assert_eq!(stops_to_colors(&[]), vec![NO_DATA; 256]);
+        assert_eq!(stops_to_colors(&[(0.5, [9, 8, 7])]), vec![[9, 8, 7]; 256]);
+    }
 
     #[test]
     fn every_palette_has_256_colours_and_unique_id() {

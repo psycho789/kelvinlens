@@ -49,7 +49,7 @@ pub struct VideoInfo {
 pub const EXTENSIONS: [&str; 2] = ["seq", "csq"];
 
 pub fn is_video(path: &Path) -> bool {
-    path.extension().map(|e| e.to_string_lossy().to_lowercase()).is_some_and(|e| EXTENSIONS.contains(&e.as_str()))
+    crate::folder::has_extension(path, &EXTENSIONS)
 }
 
 impl Video {

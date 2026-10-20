@@ -2,6 +2,8 @@
 
 use serde_json::json;
 
+use crate::xml::escape;
+
 /// One image's position and what to show for it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Placemark {
@@ -13,10 +15,6 @@ pub struct Placemark {
     pub description: String,
     /// The capture time, `YYYY-MM-DD HH:MM:SS…`, if known.
     pub time: Option<String>,
-}
-
-fn escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
 /// KML 2.2 with one placemark per image.

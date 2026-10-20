@@ -5,10 +5,13 @@
 //! to the previous one by normalised cross-correlation of temperatures, searched coarse to fine.
 //! Overlaps are blended with weights that fall off towards each image's edges, so seams don't show.
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 /// Largest stitched canvas, in pixels (width × height); larger results are refused.
 const MAX_CANVAS_PIXELS: usize = 40_000_000;
+
+/// Smallest overlap between neighbours, as a share of the smaller image's area.
+const MIN_OVERLAP: f32 = 0.15;
 
 /// A stitched image: temperatures (NaN where no image covers) and each image's top-left corner.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -30,40 +33,52 @@ pub struct Tile<'a> {
     pub height: usize,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct StitchSettings {
-    /// Smallest overlap between neighbours, as a share of the smaller image's area.
-    pub min_overlap: f32,
+/// Both images of a pair at one pyramid scale.
+struct Level {
+    a: Vec<f32>,
+    aw: usize,
+    ah: usize,
+    b: Vec<f32>,
+    bw: usize,
+    bh: usize,
 }
 
-impl Default for StitchSettings {
-    fn default() -> Self {
-        StitchSettings { min_overlap: 0.15 }
+impl Level {
+    fn new(a: &Tile, b: &Tile) -> Level {
+        Level { a: a.kelvin.to_vec(), aw: a.width, ah: a.height, b: b.kelvin.to_vec(), bw: b.width, bh: b.height }
+    }
+
+    /// The next level down: both images halved by 2×2 averaging.
+    fn halved(&self) -> Level {
+        let (a, aw, ah) = half(&self.a, self.aw, self.ah);
+        let (b, bw, bh) = half(&self.b, self.bw, self.bh);
+        Level { a, aw, ah, b, bw, bh }
+    }
+
+    /// Smallest overlap, in pixels at this scale, that `ncc` accepts.
+    fn min_area(&self) -> f32 {
+        MIN_OVERLAP * (self.aw * self.ah).min(self.bw * self.bh) as f32
     }
 }
 
 /// Offset of `b` relative to `a` (b's top-left in a's pixels) that best matches the overlap, and
 /// its correlation score.
-pub fn align(a: &Tile, b: &Tile, settings: &StitchSettings) -> Option<([i64; 2], f32)> {
+pub fn align(a: &Tile, b: &Tile) -> Option<([i64; 2], f32)> {
     // Image pyramids, halving until the smaller side is below ~40 pixels.
-    let mut levels = vec![(a.kelvin.to_vec(), a.width, a.height, b.kelvin.to_vec(), b.width, b.height)];
-    while levels.last().is_some_and(|l| l.1.min(l.2).min(l.4).min(l.5) > 40) {
-        let (ak, aw, ah, bk, bw, bh) = levels.last().unwrap();
-        let (ak2, aw2, ah2) = half(ak, *aw, *ah);
-        let (bk2, bw2, bh2) = half(bk, *bw, *bh);
-        levels.push((ak2, aw2, ah2, bk2, bw2, bh2));
+    let mut levels = vec![Level::new(a, b)];
+    while levels.last().is_some_and(|l| l.aw.min(l.ah).min(l.bw).min(l.bh) > 40) {
+        let next = levels.last().unwrap().halved();
+        levels.push(next);
     }
 
     // Exhaustive search at the coarsest level. Smooth thermal scenes correlate well almost
     // anywhere at low resolution, so keep the best few distinct candidates and let full
     // resolution decide between them.
-    let (ak, aw, ah, bk, bw, bh) = levels.last().unwrap();
-    let min_area = settings.min_overlap * (aw * ah).min(bw * bh) as f32;
+    let coarsest = levels.last().unwrap();
     let mut coarse: Vec<([i64; 2], f32)> = Vec::new();
-    for dy in -(*bh as i64) + 1..*ah as i64 {
-        for dx in -(*bw as i64) + 1..*aw as i64 {
-            if let Some(s) = ncc(ak, *aw, *ah, bk, *bw, *bh, dx, dy, min_area) {
+    for dy in -(coarsest.bh as i64) + 1..coarsest.ah as i64 {
+        for dx in -(coarsest.bw as i64) + 1..coarsest.aw as i64 {
+            if let Some(s) = ncc(coarsest, dx, dy) {
                 coarse.push(([dx, dy], s));
             }
         }
@@ -86,14 +101,12 @@ pub fn align(a: &Tile, b: &Tile, settings: &StitchSettings) -> Option<([i64; 2],
         let mut offset = start;
         let mut score = f32::MIN;
         for level in levels.iter().rev().skip(1) {
-            let (ak, aw, ah, bk, bw, bh) = level;
-            let min_area = settings.min_overlap * (aw * ah).min(bw * bh) as f32;
             let centre = [offset[0] * 2, offset[1] * 2];
             let mut refined: Option<([i64; 2], f32)> = None;
             for dy in -2..=2 {
                 for dx in -2..=2 {
                     let o = [centre[0] + dx, centre[1] + dy];
-                    if let Some(s) = ncc(ak, *aw, *ah, bk, *bw, *bh, o[0], o[1], min_area)
+                    if let Some(s) = ncc(level, o[0], o[1])
                         && refined.is_none_or(|(_, rs)| s > rs)
                     {
                         refined = Some((o, s));
@@ -109,18 +122,7 @@ pub fn align(a: &Tile, b: &Tile, settings: &StitchSettings) -> Option<([i64; 2],
             }
         }
         if levels.len() == 1 {
-            score = ncc(
-                a.kelvin,
-                a.width,
-                a.height,
-                b.kelvin,
-                b.width,
-                b.height,
-                offset[0],
-                offset[1],
-                settings.min_overlap * (a.width * a.height).min(b.width * b.height) as f32,
-            )
-            .unwrap_or(f32::MIN);
+            score = ncc(&levels[0], offset[0], offset[1]).unwrap_or(f32::MIN);
         }
         if score == f32::MIN {
             continue;
@@ -139,23 +141,14 @@ pub fn align(a: &Tile, b: &Tile, settings: &StitchSettings) -> Option<([i64; 2],
 }
 
 /// Normalised cross-correlation of `b` placed at (dx, dy) over `a`, on their finite overlap.
-#[allow(clippy::too_many_arguments)]
-fn ncc(
-    a: &[f32],
-    aw: usize,
-    ah: usize,
-    b: &[f32],
-    bw: usize,
-    bh: usize,
-    dx: i64,
-    dy: i64,
-    min_area: f32,
-) -> Option<f32> {
+fn ncc(level: &Level, dx: i64, dy: i64) -> Option<f32> {
+    let Level { a, aw, ah, b, bw, bh } = level;
+    let (aw, ah, bw, bh) = (*aw, *ah, *bw, *bh);
     let x0 = dx.max(0);
     let y0 = dy.max(0);
     let x1 = (dx + bw as i64).min(aw as i64);
     let y1 = (dy + bh as i64).min(ah as i64);
-    if x1 <= x0 || y1 <= y0 || (((x1 - x0) * (y1 - y0)) as f32) < min_area {
+    if x1 <= x0 || y1 <= y0 || (((x1 - x0) * (y1 - y0)) as f32) < level.min_area() {
         return None;
     }
     // Sample on a grid so large overlaps cost about the same as small ones.
@@ -215,7 +208,7 @@ fn half(k: &[f32], w: usize, h: usize) -> (Vec<f32>, usize, usize) {
 /// Stitches `tiles` in order. `offsets` gives fixed positions (top-left, pixels, relative to the
 /// first tile) for tiles the user placed; `None` entries are found automatically from the tile
 /// before. Errors when an automatic tile has no usable overlap with its predecessor.
-pub fn stitch(tiles: &[Tile], offsets: &[Option<[i64; 2]>], settings: &StitchSettings) -> Result<Stitched, String> {
+pub fn stitch(tiles: &[Tile], offsets: &[Option<[i64; 2]>]) -> Result<Stitched, String> {
     if tiles.len() < 2 {
         return Err("A panorama needs at least two images".into());
     }
@@ -228,7 +221,7 @@ pub fn stitch(tiles: &[Tile], offsets: &[Option<[i64; 2]>], settings: &StitchSet
                 scores.push(f32::NAN);
             }
             None => {
-                let (rel, score) = align(&tiles[i - 1], &tiles[i], settings)
+                let (rel, score) = align(&tiles[i - 1], &tiles[i])
                     .ok_or_else(|| format!("Image {} does not overlap image {} enough to align", i + 1, i))?;
                 let prev = placed[i - 1];
                 placed.push([prev[0] + rel[0], prev[1] + rel[1]]);
@@ -297,7 +290,7 @@ mod tests {
             Tile { kelvin: &b, width: 90, height: 80 },
             Tile { kelvin: &c, width: 90, height: 80 },
         ];
-        let s = stitch(&tiles, &[], &StitchSettings::default()).unwrap();
+        let s = stitch(&tiles, &[]).unwrap();
         // Relative to the topmost tile (c at y 5): a at (0, 5), b at (55, 13), c at (107, 0).
         assert_eq!(s.offsets, vec![[0, 5], [55, 13], [107, 0]]);
         assert_eq!((s.width, s.height), (197, 93));
@@ -325,7 +318,7 @@ mod tests {
         let a = crop(&k, w, 0, 0, 60, 60);
         let b = crop(&k, w, 40, 0, 60, 60);
         let tiles = [Tile { kelvin: &a, width: 60, height: 60 }, Tile { kelvin: &b, width: 60, height: 60 }];
-        let s = stitch(&tiles, &[None, Some([45, 3])], &StitchSettings::default()).unwrap();
+        let s = stitch(&tiles, &[None, Some([45, 3])]).unwrap();
         assert_eq!(s.offsets, vec![[0, 0], [45, 3]]);
         assert!(s.scores[1].is_nan());
     }
@@ -335,7 +328,7 @@ mod tests {
         let flat = vec![290.0f32; 50 * 50];
         let tiles = [Tile { kelvin: &flat, width: 50, height: 50 }, Tile { kelvin: &flat, width: 50, height: 50 }];
         // Offset (100_000, 100_000) makes a 100_050 × 100_050 canvas, far above MAX_CANVAS_PIXELS.
-        let err = stitch(&tiles, &[None, Some([100_000, 100_000])], &StitchSettings::default()).unwrap_err();
+        let err = stitch(&tiles, &[None, Some([100_000, 100_000])]).unwrap_err();
         assert!(err.contains("too large"), "{err}");
     }
 
@@ -343,7 +336,7 @@ mod tests {
     fn refuses_images_without_overlap() {
         let flat = vec![290.0f32; 50 * 50];
         let tiles = [Tile { kelvin: &flat, width: 50, height: 50 }, Tile { kelvin: &flat, width: 50, height: 50 }];
-        assert!(stitch(&tiles, &[], &StitchSettings::default()).unwrap_err().contains("does not overlap"));
-        assert!(stitch(&tiles[..1], &[], &StitchSettings::default()).is_err());
+        assert!(stitch(&tiles, &[]).unwrap_err().contains("does not overlap"));
+        assert!(stitch(&tiles[..1], &[]).is_err());
     }
 }

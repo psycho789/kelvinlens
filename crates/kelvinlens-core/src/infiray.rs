@@ -11,7 +11,45 @@
 //! The file does not say how the saved picture is rotated relative to the sensor, so the
 //! orientation is found by matching the temperatures against the picture itself.
 
+use crate::bytes::{f32_le, text, u16_at, u32_at};
+use crate::jpeg;
 use crate::params::Params;
+
+// APP2 `IJPEG` header (offsets from ExifTool's InfiRay.pm).
+const HEADER_MIN_LEN: usize = 0x50;
+/// The header's six-byte marker `IJPEG\0`.
+const HEADER_MAGIC_AT: usize = 4;
+/// Bytes of the grey IR picture at the start of the joined APP3 data (`u64`).
+const HEADER_IR_SIZE_AT: usize = 0x20;
+/// Bytes of the temperature map that follows it (`u64`).
+const HEADER_TEMP_SIZE_AT: usize = 0x30;
+/// Width of the temperature map in pixels (`u16`).
+const HEADER_TEMP_WIDTH_AT: usize = 0x3a;
+/// The app's palette number (`u16`).
+const HEADER_PALETTE_AT: usize = 0x11;
+
+// APP5 measurement settings (little-endian `f32` unless noted).
+const APP5_MIN_LEN: usize = 38;
+const APP5_ATMOSPHERE_AT: usize = 0x00; // degrees Celsius
+const APP5_DISTANCE_AT: usize = 0x04; // metres
+const APP5_EMISSIVITY_AT: usize = 0x08;
+const APP5_HUMIDITY_AT: usize = 0x0c; // 0-1
+const APP5_REFLECTED_AT: usize = 0x10; // degrees Celsius
+/// One byte, 1 when the camera drew its centre reading. It reads the pixel just up and left of
+/// the middle, at `(width / 2 - 0.5, height / 2 - 0.5)` (see `thermogram.rs`).
+const APP5_SHOW_CENTRE_AT: usize = 0x21;
+
+// APP9 sensor information.
+const APP9_MIN_LEN: usize = 0x148;
+const APP9_SERIAL_AT: usize = 0x0c0;
+const APP9_SERIAL_LEN: usize = 32;
+const APP9_FOCAL_LENGTH_AT: usize = 0x144;
+
+// EXIF IFD0 tags and the size of one IFD entry.
+const TAG_MAKE: u16 = 0x010f;
+const TAG_MODEL: u16 = 0x0110;
+const TAG_DATE_TIME: u16 = 0x0132;
+const IFD_ENTRY_LEN: usize = 12;
 
 /// One decoded IJPEG file, in the orientation of the saved picture.
 #[derive(Clone, Debug)]
@@ -74,60 +112,27 @@ pub fn is_ijpeg(bytes: &[u8]) -> bool {
 }
 
 fn is_header(d: &[u8]) -> bool {
-    d.len() >= 0x50 && &d[4..10] == b"IJPEG\0"
+    d.len() >= HEADER_MIN_LEN && &d[HEADER_MAGIC_AT..HEADER_MAGIC_AT + 6] == b"IJPEG\0"
 }
 
-/// APP segments before the image data, as (marker, payload).
+/// APP segments before the image data, as (marker, payload). `None` unless the file is a
+/// well-formed JPEG up to its scan.
 fn segments(bytes: &[u8]) -> Option<Vec<(u8, &[u8])>> {
-    if bytes.len() < 4 || bytes[0] != 0xff || bytes[1] != 0xd8 {
-        return None;
-    }
-    let mut out = Vec::new();
-    let mut i = 2;
-    while i + 4 <= bytes.len() {
-        if bytes[i] != 0xff {
-            return None;
-        }
-        let marker = bytes[i + 1];
-        if marker == 0xda || marker == 0xd9 {
-            break;
-        }
-        let len = u16::from_be_bytes([bytes[i + 2], bytes[i + 3]]) as usize;
-        if len < 2 || i + 2 + len > bytes.len() {
-            return None;
-        }
-        out.push((marker, &bytes[i + 4..i + 2 + len]));
-        i += 2 + len;
-    }
-    Some(out)
-}
-
-fn u16_le(b: &[u8], at: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(b.get(at..at + 2)?.try_into().ok()?))
+    let scan = jpeg::segments(bytes).filter(|s| s.well_formed)?;
+    Some(scan.segments.into_iter().map(|s| (s.marker, s.data)).collect())
 }
 
 fn u64_le(b: &[u8], at: usize) -> Option<u64> {
     Some(u64::from_le_bytes(b.get(at..at + 8)?.try_into().ok()?))
 }
 
-fn f32_le(b: &[u8], at: usize) -> Option<f32> {
-    Some(f32::from_le_bytes(b.get(at..at + 4)?.try_into().ok()?)).filter(|v| v.is_finite())
-}
-
-fn text(b: &[u8], at: usize, len: usize) -> Option<String> {
-    let raw = b.get(at..at + len)?;
-    let end = raw.iter().position(|&c| c == 0).unwrap_or(raw.len());
-    let s = String::from_utf8_lossy(&raw[..end]).trim().to_string();
-    (!s.is_empty()).then_some(s)
-}
-
 /// Decodes an IJPEG file. `None` if it is not one or the data is inconsistent.
 pub fn decode(bytes: &[u8]) -> Option<InfiRayJpeg> {
     let segs = segments(bytes)?;
     let header = segs.iter().find(|(m, d)| *m == 0xe2 && is_header(d))?.1;
-    let ir_size = u64_le(header, 0x20)? as usize;
-    let temp_size = u64_le(header, 0x30)? as usize;
-    let temp_width = u16_le(header, 0x3a)? as usize;
+    let ir_size = u64_le(header, HEADER_IR_SIZE_AT)? as usize;
+    let temp_size = u64_le(header, HEADER_TEMP_SIZE_AT)? as usize;
+    let temp_width = u16_at(header, HEADER_TEMP_WIDTH_AT, true)? as usize;
 
     // ExifTool joins every APP3 segment that follows the header.
     let data: Vec<u8> = segs.iter().filter(|(m, _)| *m == 0xe3).flat_map(|(_, d)| d.iter().copied()).collect();
@@ -141,16 +146,16 @@ pub fn decode(bytes: &[u8]) -> Option<InfiRayJpeg> {
 
     let mut params = Params::default();
     let mut show_centre = false;
-    if let Some((_, p)) = segs.iter().find(|(m, d)| *m == 0xe5 && d.len() >= 38) {
+    if let Some((_, p)) = segs.iter().find(|(m, d)| *m == 0xe5 && d.len() >= APP5_MIN_LEN) {
         let c = |v: f32| v + 273.15;
-        params.atmosphere_k = f32_le(p, 0x00).map(c);
-        params.distance_m = f32_le(p, 0x04);
-        params.emissivity = f32_le(p, 0x08).filter(|e| *e > 0.0 && *e <= 1.0);
-        params.humidity = f32_le(p, 0x0c);
-        params.reflected_k = f32_le(p, 0x10).map(c);
-        show_centre = p[0x21] == 1;
+        params.atmosphere_k = f32_le(p, APP5_ATMOSPHERE_AT).map(c);
+        params.distance_m = f32_le(p, APP5_DISTANCE_AT);
+        params.emissivity = f32_le(p, APP5_EMISSIVITY_AT).filter(|e| *e > 0.0 && *e <= 1.0);
+        params.humidity = f32_le(p, APP5_HUMIDITY_AT);
+        params.reflected_k = f32_le(p, APP5_REFLECTED_AT).map(c);
+        show_centre = p[APP5_SHOW_CENTRE_AT] == 1;
     }
-    let sensor_info = segs.iter().find(|(m, d)| *m == 0xe9 && d.len() >= 0x148).map(|(_, d)| *d);
+    let sensor_info = segs.iter().find(|(m, d)| *m == 0xe9 && d.len() >= APP9_MIN_LEN).map(|(_, d)| *d);
     let (make, model, date_time) = exif_ifd0(&segs);
 
     let orientation = match picture_luma(bytes) {
@@ -174,10 +179,10 @@ pub fn decode(bytes: &[u8]) -> Option<InfiRayJpeg> {
         make,
         model,
         date_time,
-        serial_number: sensor_info.and_then(|d| text(d, 0x0c0, 32)),
-        focal_length: sensor_info.and_then(|d| f32_le(d, 0x144)).filter(|f| *f > 0.0),
+        serial_number: sensor_info.and_then(|d| text(d, APP9_SERIAL_AT, APP9_SERIAL_LEN)),
+        focal_length: sensor_info.and_then(|d| f32_le(d, APP9_FOCAL_LENGTH_AT)).filter(|f| *f > 0.0),
         show_centre,
-        palette: u16_le(header, 0x11),
+        palette: u16_at(header, HEADER_PALETTE_AT, true),
     })
 }
 
@@ -241,31 +246,25 @@ fn exif_ifd0(segs: &[(u8, &[u8])]) -> (Option<String>, Option<String>, Option<St
         Some(b"MM") => false,
         _ => return none,
     };
-    let u16_at = |at: usize| {
-        t.get(at..at + 2).map(|b| if le { u16::from_le_bytes([b[0], b[1]]) } else { u16::from_be_bytes([b[0], b[1]]) })
-    };
-    let u32_at = |at: usize| {
-        t.get(at..at + 4).map(|b| {
-            let a = [b[0], b[1], b[2], b[3]];
-            if le { u32::from_le_bytes(a) } else { u32::from_be_bytes(a) }
-        })
-    };
-    let Some(ifd) = u32_at(4).map(|v| v as usize) else { return none };
-    let Some(entries) = u16_at(ifd) else { return none };
+    let Some(ifd) = u32_at(t, 4, le).map(|v| v as usize) else { return none };
+    let Some(entries) = u16_at(t, ifd, le) else { return none };
     let (mut make, mut model, mut date) = (None, None, None);
     for i in 0..entries as usize {
-        let e = ifd + 2 + i * 12;
-        let (Some(tag), Some(kind), Some(count)) = (u16_at(e), u16_at(e + 2), u32_at(e + 4)) else { break };
+        let e = ifd + 2 + i * IFD_ENTRY_LEN;
+        let (Some(tag), Some(kind), Some(count)) = (u16_at(t, e, le), u16_at(t, e + 2, le), u32_at(t, e + 4, le))
+        else {
+            break;
+        };
         if kind != 2 {
             continue;
         }
         let count = count as usize;
-        let at = if count <= 4 { e + 8 } else { u32_at(e + 8).unwrap_or(0) as usize };
+        let at = if count <= 4 { e + 8 } else { u32_at(t, e + 8, le).unwrap_or(0) as usize };
         let value = text(t, at, count);
         match tag {
-            0x010f => make = value,
-            0x0110 => model = value,
-            0x0132 => date = value,
+            TAG_MAKE => make = value,
+            TAG_MODEL => model = value,
+            TAG_DATE_TIME => date = value,
             _ => {}
         }
     }
@@ -324,11 +323,11 @@ mod tests {
 
     /// A JPEG with an IJPEG header (APP2) and 16 bytes of APP3 data.
     fn ijpeg_with_sizes(ir_size: u64, temp_size: u64) -> Vec<u8> {
-        let mut header = [0u8; 0x50];
-        header[4..10].copy_from_slice(b"IJPEG\0");
-        header[0x20..0x28].copy_from_slice(&ir_size.to_le_bytes());
-        header[0x30..0x38].copy_from_slice(&temp_size.to_le_bytes());
-        header[0x3a..0x3c].copy_from_slice(&4u16.to_le_bytes());
+        let mut header = [0u8; HEADER_MIN_LEN];
+        header[HEADER_MAGIC_AT..HEADER_MAGIC_AT + 6].copy_from_slice(b"IJPEG\0");
+        header[HEADER_IR_SIZE_AT..HEADER_IR_SIZE_AT + 8].copy_from_slice(&ir_size.to_le_bytes());
+        header[HEADER_TEMP_SIZE_AT..HEADER_TEMP_SIZE_AT + 8].copy_from_slice(&temp_size.to_le_bytes());
+        header[HEADER_TEMP_WIDTH_AT..HEADER_TEMP_WIDTH_AT + 2].copy_from_slice(&4u16.to_le_bytes());
         let mut out = vec![0xff, 0xd8];
         for (marker, payload) in [(0xe2u8, &header[..]), (0xe3, &[0u8; 16][..])] {
             out.extend([0xff, marker]);

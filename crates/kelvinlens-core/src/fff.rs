@@ -7,6 +7,8 @@
 //! checksum). The header's byte order is given by its swap-pattern field; the camera-info record
 //! (type 32) is little-endian in every file seen, which is also what flyr assumes.
 
+use crate::bytes::{f32_le, text, u16_at, u32_at};
+use crate::jpeg;
 use crate::{Error, Params, Result};
 
 pub const RAW_DATA: u16 = 1;
@@ -37,16 +39,6 @@ impl Directory {
     pub fn extent(&self) -> usize {
         self.entries.iter().map(|e| e.offset + e.length).max().unwrap_or(64)
     }
-}
-
-fn u16_at(b: &[u8], at: usize, le: bool) -> Option<u16> {
-    let s: [u8; 2] = b.get(at..at + 2)?.try_into().ok()?;
-    Some(if le { u16::from_le_bytes(s) } else { u16::from_be_bytes(s) })
-}
-
-fn u32_at(b: &[u8], at: usize, le: bool) -> Option<u32> {
-    let s: [u8; 4] = b.get(at..at + 4)?.try_into().ok()?;
-    Some(if le { u32::from_le_bytes(s) } else { u32::from_be_bytes(s) })
 }
 
 /// Parses the header and directory of the FFF block at the start of `b`.
@@ -83,29 +75,15 @@ pub type Segments = Vec<(usize, usize)>;
 /// The FFF data of a FLIR JPEG (its `APP1 FLIR` segments joined in order), and for each segment
 /// the file offset of its data and the data's length, so FFF offsets can be mapped back to the file.
 pub fn from_jpeg(bytes: &[u8]) -> Option<(Vec<u8>, Segments)> {
-    let mut chunks: Vec<(u8, usize, usize)> = Vec::new();
-    let mut i = 2;
-    // Walk the JPEG segments up to the image data.
-    while i + 4 <= bytes.len() && bytes[i] == 0xFF {
-        let marker = bytes[i + 1];
-        if marker == 0xD8 || (0xD0..=0xD7).contains(&marker) || marker == 0x01 {
-            i += 2;
-            continue;
-        }
-        if marker == 0xDA || marker == 0xD9 {
-            break;
-        }
-        let len = u16::from_be_bytes([bytes[i + 2], bytes[i + 3]]) as usize;
-        let data = i + 4;
-        let end = i + 2 + len;
-        if end > bytes.len() || len < 2 {
-            break;
-        }
-        if marker == 0xE1 && bytes[data..end].starts_with(b"FLIR\0") && end - data >= 8 {
-            chunks.push((bytes[data + 6], data + 8, end - (data + 8)));
-        }
-        i = end;
-    }
+    // Segments up to the image data; a damaged tail is ignored, as the FLIR segments come first.
+    let scan = jpeg::segments(bytes)?;
+    // (sequence number, file offset of the data, data length) per `APP1 FLIR` segment.
+    let mut chunks: Vec<(u8, usize, usize)> = scan
+        .segments
+        .iter()
+        .filter(|s| s.marker == 0xE1 && s.data.starts_with(b"FLIR\0") && s.data.len() >= 8)
+        .map(|s| (s.data[6], s.offset + 8, s.data.len() - 8))
+        .collect();
     if chunks.is_empty() {
         return None;
     }
@@ -126,18 +104,15 @@ pub struct CameraExtras {
     pub frame_rate: Option<u16>,
 }
 
-fn text(rec: &[u8], at: usize, len: usize) -> Option<String> {
-    let s = rec.get(at..at + len)?;
-    let end = s.iter().position(|&c| c == 0).unwrap_or(s.len());
-    let t = String::from_utf8_lossy(&s[..end]).trim().to_string();
-    (!t.is_empty() && t.chars().all(|c| !c.is_control())).then_some(t)
+/// Text from the camera-info record; strings with control characters are garbage, not text.
+fn record_text(rec: &[u8], at: usize, len: usize) -> Option<String> {
+    text(rec, at, len).filter(|t| t.chars().all(|c| !c.is_control()))
 }
 
 pub fn camera_extras(fff: &[u8]) -> Option<CameraExtras> {
     let dir = directory(fff)?;
     let e = dir.get(CAMERA_INFO)?;
     let rec = fff.get(e.offset..e.offset + e.length)?;
-    let f32_at = |at: usize| rec.get(at..at + 4).map(|s| f32::from_le_bytes(s.try_into().unwrap()));
     let time = (|| {
         let secs = u32_at(rec, 0x384, true)?;
         let ms = u32_at(rec, 0x388, true)? & 0xffff;
@@ -146,10 +121,10 @@ pub fn camera_extras(fff: &[u8]) -> Option<CameraExtras> {
         (631_152_000..4_102_444_800).contains(&secs).then_some((secs as f64 + ms as f64 / 1000.0, tz))
     })();
     Some(CameraExtras {
-        model: text(rec, 0xd4, 32),
-        serial: text(rec, 0x104, 16),
-        lens: text(rec, 0x170, 32),
-        field_of_view: f32_at(0x1b4).filter(|v| v.is_finite() && *v > 0.0 && *v < 360.0),
+        model: record_text(rec, 0xd4, 32),
+        serial: record_text(rec, 0x104, 16),
+        lens: record_text(rec, 0x170, 32),
+        field_of_view: f32_le(rec, 0x1b4).filter(|v| *v > 0.0 && *v < 360.0),
         time,
         frame_rate: u16_at(rec, 0x464, true).filter(|&r| r > 0 && r < 10_000),
     })

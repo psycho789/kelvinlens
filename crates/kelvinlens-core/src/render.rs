@@ -39,6 +39,13 @@ pub struct Look {
     pub isotherms: Vec<Isotherm>,
 }
 
+impl Look {
+    /// The same look with a 256-colour palette (custom palettes arrive with any number of colours).
+    pub fn normalized(self) -> Look {
+        Look { palette: self.palette.normalized(), ..self }
+    }
+}
+
 /// Palette index for a temperature with linear mapping over `range`; `None` for NaN.
 fn linear_index(kelvin: f32, range: [f32; 2]) -> Option<u8> {
     if kelvin.is_nan() {
@@ -256,6 +263,7 @@ pub fn placement_aligned(
 /// Thermal pixels → photo pixels for the whole thermal frame. The PiP geometry maps the camera's
 /// picture-in-picture crop; the same linear mapping is extended to the full frame (as FLIR does
 /// for blending and fusion). Without geometry the thermal image is stretched over the photo.
+/// `src/viewer.ts` implements the same mapping for the overlay; keep the two in step.
 pub fn placement(pip: Option<Pip>, width: usize, height: usize, photo: &Photo) -> ([f32; 4], [f32; 4]) {
     let full = [0.0, 0.0, width as f32, height as f32];
     match pip {
@@ -270,89 +278,98 @@ pub fn placement(pip: Option<Pip>, width: usize, height: usize, photo: &Photo) -
     }
 }
 
-/// Renders a thermal/photo composite at most `max_width` pixels wide.
-#[allow(clippy::too_many_arguments)]
-pub fn fuse(
-    kelvin: &[f32],
-    width: usize,
-    height: usize,
-    look: &Look,
-    photo: &Photo,
-    pip: Option<Pip>,
-    fusion: Fusion,
-    max_width: usize,
-    align: Alignment,
-) -> Composite {
-    let (src, dst) = placement_aligned(pip, width, height, photo, align);
-    let thermal = rgb(kelvin, width, height, look);
-    match fusion {
-        Fusion::Msx { strength } => {
-            // Output covers the whole thermal image, at most `max_width` wide; the photo's edges
-            // are added wherever the photo overlaps it.
-            let scale = (max_width as f32 / width as f32).clamp(1.0, 8.0).floor().max(1.0);
-            let (ow, oh) = (width * scale as usize, height * scale as usize);
-            // Photo pixels per output pixel, for box-averaging the luminance.
-            let foot = (dst[2] / src[2] / scale).max(1.0);
-            let to_photo = |ox: usize, oy: usize| {
-                let (tx, ty) = ((ox as f32 + 0.5) / scale, (oy as f32 + 0.5) / scale);
-                (dst[0] + (tx - src[0]) * dst[2] / src[2], dst[1] + (ty - src[1]) * dst[3] / src[3])
-            };
-            let mut lum = vec![f32::NAN; ow * oh];
-            for oy in 0..oh {
-                for ox in 0..ow {
-                    let (px, py) = to_photo(ox, oy);
-                    lum[oy * ow + ox] = photo_luminance_at(photo, px, py, foot);
-                }
-            }
-            let radius = (ow.min(oh) / 160).clamp(1, 4);
-            let blur = box_blur(&lum, ow, oh, radius);
-            let gain = 2.2 * strength.clamp(0.0, 1.0);
-            let mut out = Vec::with_capacity(ow * oh * 3);
-            for oy in 0..oh {
-                for ox in 0..ow {
-                    let c = sample_rgb(&thermal, width, height, (ox as f32 + 0.5) / scale, (oy as f32 + 0.5) / scale);
-                    let i = oy * ow + ox;
-                    let edge = if lum[i].is_finite() && blur[i].is_finite() { (lum[i] - blur[i]) * gain } else { 0.0 };
-                    out.extend(c.map(|v| (v + edge * 255.0).round().clamp(0.0, 255.0) as u8));
-                }
-            }
-            let s = scale;
-            Composite {
-                width: ow,
-                height: oh,
-                rgb: out,
-                source: [0.0, 0.0, width as f32, height as f32],
-                destination: [0.0, 0.0, width as f32 * s, height as f32 * s],
-            }
-        }
-        Fusion::Interval { lo, hi } => {
-            let (lo, hi) = (lo.min(hi), lo.max(hi));
-            let scale = (max_width as f32 / photo.width as f32).min(1.0);
-            let ow = ((photo.width as f32 * scale).round() as usize).max(1);
-            let oh = ((photo.height as f32 * scale).round() as usize).max(1);
-            let mut out = Vec::with_capacity(ow * oh * 3);
-            for oy in 0..oh {
-                for ox in 0..ow {
-                    let (px, py) = ((ox as f32 + 0.5) / scale, (oy as f32 + 0.5) / scale);
-                    let tx = src[0] + (px - dst[0]) * src[2] / dst[2];
-                    let ty = src[1] + (py - dst[1]) * src[3] / dst[3];
-                    let inside = tx >= src[0] && ty >= src[1] && tx < src[0] + src[2] && ty < src[1] + src[3];
-                    let k = if inside { nearest(kelvin, width, height, tx, ty) } else { f32::NAN };
-                    if k >= lo && k <= hi {
-                        out.extend(
-                            sample_rgb(&thermal, width, height, tx, ty).map(|v| v.round().clamp(0.0, 255.0) as u8),
-                        );
-                    } else {
-                        let (sx, sy) = ((px as usize).min(photo.width - 1), (py as usize).min(photo.height - 1));
-                        let j = (sy * photo.width + sx) * 3;
-                        out.extend_from_slice(&photo.rgb[j..j + 3]);
-                    }
-                }
-            }
-            let destination = [dst[0] * scale, dst[1] * scale, dst[2] * scale, dst[3] * scale];
-            Composite { width: ow, height: oh, rgb: out, source: src, destination }
+/// What `fuse` needs: the temperatures with their size and colouring, the photo and where the
+/// thermal image sits on it, and how to combine them.
+pub struct FuseRequest<'a> {
+    pub kelvin: &'a [f32],
+    pub width: usize,
+    pub height: usize,
+    pub look: &'a Look,
+    pub photo: &'a Photo,
+    pub pip: Option<Pip>,
+    pub fusion: Fusion,
+    /// Widest output in pixels.
+    pub max_width: usize,
+    pub align: Alignment,
+}
+
+/// Renders a thermal/photo composite at most `req.max_width` pixels wide.
+pub fn fuse(req: &FuseRequest) -> Composite {
+    let (src, dst) = placement_aligned(req.pip, req.width, req.height, req.photo, req.align);
+    let thermal = rgb(req.kelvin, req.width, req.height, req.look);
+    match req.fusion {
+        Fusion::Msx { strength } => fuse_msx(req, &thermal, src, dst, strength),
+        Fusion::Interval { lo, hi } => fuse_interval(req, &thermal, src, dst, (lo, hi)),
+    }
+}
+
+/// MSX: the thermal image with the photo's edges added wherever the photo overlaps it.
+fn fuse_msx(req: &FuseRequest, thermal: &[u8], src: [f32; 4], dst: [f32; 4], strength: f32) -> Composite {
+    let (width, height, photo) = (req.width, req.height, req.photo);
+    // Output covers the whole thermal image, at most `max_width` wide; the photo's edges
+    // are added wherever the photo overlaps it.
+    let scale = (req.max_width as f32 / width as f32).clamp(1.0, 8.0).floor().max(1.0);
+    let (ow, oh) = (width * scale as usize, height * scale as usize);
+    // Photo pixels per output pixel, for box-averaging the luminance.
+    let foot = (dst[2] / src[2] / scale).max(1.0);
+    let to_photo = |ox: usize, oy: usize| {
+        let (tx, ty) = ((ox as f32 + 0.5) / scale, (oy as f32 + 0.5) / scale);
+        (dst[0] + (tx - src[0]) * dst[2] / src[2], dst[1] + (ty - src[1]) * dst[3] / src[3])
+    };
+    let mut lum = vec![f32::NAN; ow * oh];
+    for oy in 0..oh {
+        for ox in 0..ow {
+            let (px, py) = to_photo(ox, oy);
+            lum[oy * ow + ox] = photo_luminance_at(photo, px, py, foot);
         }
     }
+    let radius = (ow.min(oh) / 160).clamp(1, 4);
+    let blur = box_blur(&lum, ow, oh, radius);
+    let gain = 2.2 * strength.clamp(0.0, 1.0);
+    let mut out = Vec::with_capacity(ow * oh * 3);
+    for oy in 0..oh {
+        for ox in 0..ow {
+            let c = sample_rgb(thermal, width, height, (ox as f32 + 0.5) / scale, (oy as f32 + 0.5) / scale);
+            let i = oy * ow + ox;
+            let edge = if lum[i].is_finite() && blur[i].is_finite() { (lum[i] - blur[i]) * gain } else { 0.0 };
+            out.extend(c.map(|v| (v + edge * 255.0).round().clamp(0.0, 255.0) as u8));
+        }
+    }
+    Composite {
+        width: ow,
+        height: oh,
+        rgb: out,
+        source: [0.0, 0.0, width as f32, height as f32],
+        destination: [0.0, 0.0, width as f32 * scale, height as f32 * scale],
+    }
+}
+
+/// Interval: the thermal image where the temperature is within `range`, the photo elsewhere.
+fn fuse_interval(req: &FuseRequest, thermal: &[u8], src: [f32; 4], dst: [f32; 4], range: (f32, f32)) -> Composite {
+    let (kelvin, width, height, photo) = (req.kelvin, req.width, req.height, req.photo);
+    let (lo, hi) = (range.0.min(range.1), range.0.max(range.1));
+    let scale = (req.max_width as f32 / photo.width as f32).min(1.0);
+    let ow = ((photo.width as f32 * scale).round() as usize).max(1);
+    let oh = ((photo.height as f32 * scale).round() as usize).max(1);
+    let mut out = Vec::with_capacity(ow * oh * 3);
+    for oy in 0..oh {
+        for ox in 0..ow {
+            let (px, py) = ((ox as f32 + 0.5) / scale, (oy as f32 + 0.5) / scale);
+            let tx = src[0] + (px - dst[0]) * src[2] / dst[2];
+            let ty = src[1] + (py - dst[1]) * src[3] / dst[3];
+            let inside = tx >= src[0] && ty >= src[1] && tx < src[0] + src[2] && ty < src[1] + src[3];
+            let k = if inside { nearest(kelvin, width, height, tx, ty) } else { f32::NAN };
+            if k >= lo && k <= hi {
+                out.extend(sample_rgb(thermal, width, height, tx, ty).map(|v| v.round().clamp(0.0, 255.0) as u8));
+            } else {
+                let (sx, sy) = ((px as usize).min(photo.width - 1), (py as usize).min(photo.height - 1));
+                let j = (sy * photo.width + sx) * 3;
+                out.extend_from_slice(&photo.rgb[j..j + 3]);
+            }
+        }
+    }
+    let destination = [dst[0] * scale, dst[1] * scale, dst[2] * scale, dst[3] * scale];
+    Composite { width: ow, height: oh, rgb: out, source: src, destination }
 }
 
 fn nearest(kelvin: &[f32], width: usize, height: usize, x: f32, y: f32) -> f32 {
@@ -487,9 +504,20 @@ mod tests {
     #[test]
     fn msx_embosses_photo_edges_on_flat_thermal() {
         let k = vec![290.0; 16];
-        let l = look(Distribution::TemperatureLinear);
+        let (l, p) = (look(Distribution::TemperatureLinear), photo());
+        let req = FuseRequest {
+            kelvin: &k,
+            width: 4,
+            height: 4,
+            look: &l,
+            photo: &p,
+            pip: None,
+            fusion: Fusion::Msx { strength: 1.0 },
+            max_width: 8,
+            align: NO_ALIGNMENT,
+        };
         // 4×4 thermal over the 8×8 photo; output scaled 2× (max width 8) covers the thermal image.
-        let c = fuse(&k, 4, 4, &l, &photo(), None, Fusion::Msx { strength: 1.0 }, 8, NO_ALIGNMENT);
+        let c = fuse(&req);
         assert_eq!((c.width, c.height), (8, 8));
         let lum = |x: usize| c.rgb[(4 * 8 + x) * 3];
         // Flat thermal is mid-grey; the dark side of the edge darkens and the bright side brightens.
@@ -501,18 +529,28 @@ mod tests {
             source: super::super::thermogram::Rect { x: 0, y: 0, w: 4, h: 4 },
             destination: super::super::thermogram::Rect { x: -8, y: 0, w: 16, h: 8 },
         };
-        let c = fuse(&k, 4, 4, &l, &photo(), Some(wide), Fusion::Msx { strength: 1.0 }, 8, NO_ALIGNMENT);
+        let c = fuse(&FuseRequest { pip: Some(wide), ..req });
         assert_eq!(c.rgb[0], 128);
         // Strength 0 is plain thermal.
-        let plain = fuse(&k, 4, 4, &l, &photo(), None, Fusion::Msx { strength: 0.0 }, 8, NO_ALIGNMENT);
+        let plain = fuse(&FuseRequest { fusion: Fusion::Msx { strength: 0.0 }, ..req });
         assert!(plain.rgb.iter().all(|&v| v == 128));
     }
 
     #[test]
     fn interval_fusion_shows_thermal_only_in_range() {
         let k = vec![285.0, 295.0, 285.0, 295.0];
-        let l = look(Distribution::TemperatureLinear);
-        let c = fuse(&k, 2, 2, &l, &photo(), None, Fusion::Interval { lo: 290.0, hi: 300.0 }, 1000, NO_ALIGNMENT);
+        let (l, p) = (look(Distribution::TemperatureLinear), photo());
+        let c = fuse(&FuseRequest {
+            kelvin: &k,
+            width: 2,
+            height: 2,
+            look: &l,
+            photo: &p,
+            pip: None,
+            fusion: Fusion::Interval { lo: 290.0, hi: 300.0 },
+            max_width: 1000,
+            align: NO_ALIGNMENT,
+        });
         // Left column (285 K) shows the photo (black); right column (295 K) shows thermal.
         let at = |x: usize, y: usize| &c.rgb[(y * 8 + x) * 3..(y * 8 + x) * 3 + 3];
         assert_eq!(at(0, 0), &[0, 0, 0]);
@@ -541,6 +579,15 @@ mod tests {
         assert!((d[0] - 0.0).abs() < 1e-4 && (d[1] + 8.0).abs() < 1e-4, "{d:?}");
         assert!((d[2] - 110.0).abs() < 1e-4 && (d[3] - 110.0).abs() < 1e-4);
         assert_eq!(placement_aligned(None, 10, 10, &p, NO_ALIGNMENT).1, [0.0, 0.0, 100.0, 100.0]);
+    }
+
+    #[test]
+    fn look_normalized_resamples_the_palette_to_256_colours() {
+        let mut l = look(Distribution::Detail);
+        l.palette.colors = vec![[0, 0, 0], [255, 255, 255]];
+        let n = l.clone().normalized();
+        assert_eq!(n.palette.colors.len(), 256);
+        assert_eq!((n.range, n.distribution), (l.range, l.distribution));
     }
 
     #[test]

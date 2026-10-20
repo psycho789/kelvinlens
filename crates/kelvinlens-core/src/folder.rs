@@ -16,15 +16,29 @@ pub fn candidates(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     Ok(out)
 }
 
+/// Whether `path` ends in one of `extensions` (lower case, without the dot), ignoring case.
+pub fn has_extension(path: &Path, extensions: &[&str]) -> bool {
+    path.extension().is_some_and(|e| extensions.iter().any(|x| e.eq_ignore_ascii_case(x)))
+}
+
 fn has_supported_extension(path: &Path) -> bool {
     let hidden = path.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.'));
-    let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase());
-    !hidden && ext.is_some_and(|e| EXTENSIONS.contains(&e.as_str()))
+    !hidden && has_extension(path, &EXTENSIONS)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn has_extension_ignores_case_and_needs_a_whole_extension() {
+        let exts = ["png", "jpg"];
+        assert!(has_extension(Path::new("a/logo.PNG"), &exts));
+        assert!(has_extension(Path::new("photo.Jpg"), &exts));
+        assert!(!has_extension(Path::new("photo.jpeg"), &exts));
+        assert!(!has_extension(Path::new("png"), &exts));
+        assert!(!has_extension(Path::new("noextension"), &exts));
+    }
 
     #[test]
     fn filters_by_extension_and_skips_hidden() {

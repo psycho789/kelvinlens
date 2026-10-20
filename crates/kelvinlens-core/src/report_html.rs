@@ -7,10 +7,7 @@ use std::fmt::Write as _;
 use crate::measure::Shape;
 use crate::report::{Chart, Prepared, PreparedImage, base64_encode};
 use crate::sidecar::Annotation;
-
-fn esc(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
-}
+use crate::xml::escape as esc;
 
 const SEVERITY: [&str; 4] = ["#64748b", "#ca8a04", "#ea580c", "#dc2626"];
 
