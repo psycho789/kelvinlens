@@ -19,6 +19,7 @@ export interface PanelHandlers {
   setSmooth(on: boolean): void;
   setShowExtremes(on: boolean): void;
   setRotation(degrees: number): void;
+  setAlign(align: [number, number, number] | null): void;
   startCrop(): void;
   clearCrop(): void;
   setParams(params: Params): void;
@@ -372,6 +373,7 @@ export class Panel {
             h("span", { class: "unit" }, symbol(unit)),
           )
         : null,
+      hasPhoto && state.view !== "thermal" && state.view !== "photo" ? this.alignRow(doc) : null,
       h(
         "div",
         { class: "row buttons" },
@@ -412,6 +414,26 @@ export class Panel {
       ),
     );
     this.drawHistogram(doc);
+  }
+
+  /** Nudges the thermal image on the photo when the camera's alignment is off. */
+  private alignRow(doc: Doc): HTMLElement {
+    const [dx, dy, s] = doc.presentation.align ?? [0, 0, 1];
+    const step = Math.max(1, Math.round((doc.photo?.width ?? 640) / 320));
+    const set = (a: [number, number, number]) => this.on.setAlign([Math.round(a[0]), Math.round(a[1]), Math.round(a[2] * 1000) / 1000]);
+    const b = (label: string, title: string, a: [number, number, number]) => h("button", { title, "aria-label": title, onclick: () => set(a) }, label);
+    return h(
+      "div",
+      { class: "row buttons align-row" },
+      h("span", { class: "label", title: "Move or scale the thermal image on the photo if they don't line up" }, "Align"),
+      b("←", "Move left", [dx - step, dy, s]),
+      b("→", "Move right", [dx + step, dy, s]),
+      b("↑", "Move up", [dx, dy - step, s]),
+      b("↓", "Move down", [dx, dy + step, s]),
+      b("−", "Smaller", [dx, dy, s * 0.99]),
+      b("+", "Larger", [dx, dy, s * 1.01]),
+      doc.presentation.align ? h("button", { title: "Back to the camera's alignment", onclick: () => this.on.setAlign(null) }, "Reset") : null,
+    );
   }
 
   private drawHistogram(doc: Doc): void {

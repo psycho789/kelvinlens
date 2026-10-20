@@ -227,7 +227,7 @@ const viewer = new Viewer($("#viewer"), {
       state.view === "msx"
         ? { mode: "msx" as const, strength: state.msxStrength }
         : { mode: "interval" as const, lo: (state.fusionRange ?? [range[0] + (range[1] - range[0]) * 0.6, range[1]])[0], hi: (state.fusionRange ?? [range[0], range[1]])[1] };
-    return api.fuse(doc.info.id, lookOf(doc), fusion, 1600);
+    return api.fuse(doc.info.id, lookOf(doc), fusion, 1600, doc.presentation.align ?? null);
   },
 });
 
@@ -309,6 +309,15 @@ const panel = new Panel($("#panel"), {
     doc.presentation = { ...doc.presentation, rotation: Math.round(r * 100) / 100 };
     markDirty(doc);
     viewer.fit();
+    panel.renderDisplay(doc);
+  },
+  setAlign: (align) => {
+    const doc = currentDoc();
+    if (!doc) return;
+    const neutral = !align || (align[0] === 0 && align[1] === 0 && align[2] === 1);
+    doc.presentation = { ...doc.presentation, align: neutral ? null : align };
+    markDirty(doc);
+    refreshView();
     panel.renderDisplay(doc);
   },
   startCrop: () => {
@@ -469,7 +478,7 @@ function refreshView(): void {
   if (!doc) return;
   viewer.lookKey = lookKey(doc);
   const range = displayRange(doc);
-  viewer.fusionKey = state.view === "msx" ? `msx${state.msxStrength}` : `iv${JSON.stringify(state.fusionRange ?? range)}`;
+  viewer.fusionKey = `${state.view === "msx" ? `msx${state.msxStrength}` : `iv${JSON.stringify(state.fusionRange ?? range)}`}|${JSON.stringify(doc.presentation.align ?? null)}`;
   viewer.selected = state.selected;
   viewer.alarms = doc.measurements.map((_, i) => alarmOn(doc, i));
   viewer.draw();
@@ -748,12 +757,16 @@ function deleteMeasurement(index: number): void {
 
 async function seek(frame: number): Promise<void> {
   const doc = currentDoc();
-  const v = doc?.video;
-  if (!doc || !v) return;
+  if (doc) await seekDoc(doc, frame);
+}
+
+async function seekDoc(doc: Doc, frame: number): Promise<void> {
+  const v = doc.video;
+  if (!v) return;
   const n = doc.info.video!.frames;
   frame = Math.max(0, Math.min(n - 1, frame));
   if (frame === v.frame && !v.playing) {
-    panel.renderVideo(doc);
+    if (doc === currentDoc()) panel.renderVideo(doc);
     return;
   }
   try {
@@ -858,46 +871,60 @@ async function exportSegment(): Promise<void> {
 
 async function exportVideo(): Promise<void> {
   const doc = currentDoc();
-  const v = doc?.video;
-  if (!doc || !v) return;
+  if (!doc?.video) return;
   const path = await pickers.save({ defaultPath: siblingPath(doc, `${stem(doc)}.avi`), filters: [{ name: "AVI video", extensions: ["avi"] }] });
   if (!path) return;
+  const p = progress("Exporting video");
+  try {
+    const n = await writeVideo(doc, path, (done, total, text) => {
+      p.set(done, total, text);
+      return !p.cancelled();
+    });
+    if (n > 0) toast(`Saved ${n} frames to ${basename(path)}`);
+  } catch (e) {
+    toast(`Export failed: ${errorText(e)}`, "error");
+  } finally {
+    p.close();
+  }
+}
+
+/** Renders the doc's segment (in to out) as an MJPEG AVI. `onFrame` returns false to cancel.
+ * Returns the number of frames written (0 if cancelled). */
+async function writeVideo(doc: Doc, path: string, onFrame: (done: number, total: number, text: string) => boolean = () => true): Promise<number> {
+  const v = doc.video!;
   const wasPlaying = v.playing;
   v.playing = false;
   const startFrame = v.frame;
   // One colour scale for the whole clip, so colours mean the same temperature in every frame.
   const autoRange = doc.range === null;
   if (autoRange) doc.range = [...displayRange(doc)];
-  const p = progress("Exporting video");
   const opts = { ...DEFAULT_EXPORT, ...(loadSettings().exportOverlay ?? {}), scale: 0 };
   let size: [number, number] | null = null;
+  let cancelled = false;
   try {
     await api.aviReset();
     const total = v.last - v.first + 1;
     for (let f = v.first; f <= v.last; f++) {
-      if (p.cancelled()) break;
-      p.set(f - v.first, total, `Frame ${f + 1}`);
-      await seek(f);
+      if (!onFrame(f - v.first, total, `Frame ${f + 1}`)) {
+        cancelled = true;
+        break;
+      }
+      await seekDoc(doc, f);
       const canvas = await renderExport(doc, state.unit, state.smooth, { ...opts, fileName: true });
       // Frame sizes must not change within a video.
       if (!size) size = [canvas.width, canvas.height];
       const fixed = size[0] === canvas.width && size[1] === canvas.height ? canvas : resizeCanvas(canvas, size[0], size[1]);
       await api.aviAddFrame(await encode(fixed, "jpg"));
     }
-    if (!p.cancelled() && size) {
-      const fps = doc.info.video!.frameRate ?? 10;
-      const n = await api.aviFinish(path, size[0], size[1], fps);
-      toast(`Saved ${n} frames to ${basename(path)}`);
-    } else {
+    if (cancelled || !size) {
       await api.aviReset();
+      return 0;
     }
-  } catch (e) {
-    toast(`Export failed: ${errorText(e)}`, "error");
+    return await api.aviFinish(path, size[0], size[1], doc.info.video!.frameRate ?? 10);
   } finally {
-    p.close();
     if (autoRange) doc.range = null;
-    await seek(startFrame);
-    if (wasPlaying) togglePlay();
+    await seekDoc(doc, startFrame);
+    if (wasPlaying && doc === currentDoc()) togglePlay();
   }
 }
 
@@ -1344,6 +1371,7 @@ $("#batch").onclick = () =>
     },
     refreshAnalysis: (doc) => refreshAnalysis(doc, false),
     saveEdits: (doc) => saveDoc(doc),
+    writeVideo: (doc, path) => writeVideo(doc, path),
     markDirty,
     redraw: () => selectDoc(state.current),
   });

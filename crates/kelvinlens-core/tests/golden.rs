@@ -247,7 +247,7 @@ fn report_pdf_is_produced() {
                     findings: findings.clone(),
                     fields: BTreeMap::from([("Component".to_string(), "Mug".to_string())]),
                     asset: "Kitchen".into(),
-                    presentation: Presentation { rotation: 90.0, crop: Some([10.0, 5.0, 140.0, 110.0]) },
+                    presentation: Presentation { rotation: 90.0, crop: Some([10.0, 5.0, 140.0, 110.0]), align: None },
                     ..ReportImage::basic(
                         &img,
                         Look { isotherms: isotherms.clone(), ..look(&img, "iron") },
@@ -265,7 +265,7 @@ fn report_pdf_is_produced() {
                     )
                 },
                 ReportImage {
-                    presentation: Presentation { rotation: 17.0, crop: None },
+                    presentation: Presentation { rotation: 17.0, crop: None, align: None },
                     ..ReportImage::basic(
                         &t640,
                         t640_look.clone(),

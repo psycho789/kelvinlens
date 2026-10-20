@@ -104,6 +104,8 @@ export type Annotation =
 export interface Presentation {
   rotation: number;
   crop: [number, number, number, number] | null;
+  /** Manual thermal-on-photo alignment: shift x, y (photo pixels) and scale. */
+  align?: [number, number, number] | null;
 }
 
 export interface Severity {
@@ -325,8 +327,8 @@ export const api = {
     const buf = await invoke<ArrayBuffer>("render", { id, look });
     return rgbaImage(buf, width, height);
   },
-  async fuse(id: number, look: Look, fusion: Fusion, maxWidth: number): Promise<Composite> {
-    const buf = await invoke<ArrayBuffer>("fuse", { id, look, fusion, maxWidth });
+  async fuse(id: number, look: Look, fusion: Fusion, maxWidth: number, align: [number, number, number] | null = null): Promise<Composite> {
+    const buf = await invoke<ArrayBuffer>("fuse", { id, look, fusion, maxWidth, align });
     const head = new DataView(buf, 0, 40);
     const w = head.getUint32(0, true);
     const h = head.getUint32(4, true);

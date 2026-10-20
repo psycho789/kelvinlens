@@ -256,12 +256,16 @@ export class Viewer {
         // The PiP geometry maps the camera's picture-in-picture crop; the same linear mapping
         // extends to the whole thermal frame (render.rs `placement`).
         const pip = doc.info.pip;
+        let dst: [number, number, number, number] = [0, 0, doc.photo!.width, doc.photo!.height];
         if (pip && pip.source.w > 0 && pip.source.h > 0) {
           const sx = pip.destination.w / pip.source.w;
           const sy = pip.destination.h / pip.source.h;
-          return { src: [0, 0, w, h], dst: [pip.destination.x - pip.source.x * sx, pip.destination.y - pip.source.y * sy, w * sx, h * sy] };
+          dst = [pip.destination.x - pip.source.x * sx, pip.destination.y - pip.source.y * sy, w * sx, h * sy];
         }
-        return { src: [0, 0, w, h], dst: [0, 0, doc.photo!.width, doc.photo!.height] };
+        // Manual alignment (render.rs `placement_aligned`).
+        const [dx, dy, s] = doc.presentation.align ?? [0, 0, 1];
+        const k = s > 0.05 ? s : 1;
+        return { src: [0, 0, w, h], dst: [dst[0] + dx - (dst[2] * (k - 1)) / 2, dst[1] + dy - (dst[3] * (k - 1)) / 2, dst[2] * k, dst[3] * k] };
       }
     }
   }

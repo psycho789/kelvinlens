@@ -234,6 +234,25 @@ pub struct Composite {
     pub destination: [f32; 4],
 }
 
+/// A manual correction of where the thermal image sits on the photo: shift `dx`, `dy` (photo
+/// pixels) and `scale` (1.0 = as recorded), applied around the thermal image's centre.
+pub type Alignment = [f32; 3];
+
+pub const NO_ALIGNMENT: Alignment = [0.0, 0.0, 1.0];
+
+/// `placement` with a manual alignment applied to the destination.
+pub fn placement_aligned(
+    pip: Option<Pip>,
+    width: usize,
+    height: usize,
+    photo: &Photo,
+    align: Alignment,
+) -> ([f32; 4], [f32; 4]) {
+    let (src, [x, y, w, h]) = placement(pip, width, height, photo);
+    let s = if align[2].is_finite() && align[2] > 0.05 { align[2] } else { 1.0 };
+    (src, [x + align[0] - w * (s - 1.0) / 2.0, y + align[1] - h * (s - 1.0) / 2.0, w * s, h * s])
+}
+
 /// Thermal pixels → photo pixels for the whole thermal frame. The PiP geometry maps the camera's
 /// picture-in-picture crop; the same linear mapping is extended to the full frame (as FLIR does
 /// for blending and fusion). Without geometry the thermal image is stretched over the photo.
@@ -262,8 +281,9 @@ pub fn fuse(
     pip: Option<Pip>,
     fusion: Fusion,
     max_width: usize,
+    align: Alignment,
 ) -> Composite {
-    let (src, dst) = placement(pip, width, height, photo);
+    let (src, dst) = placement_aligned(pip, width, height, photo, align);
     let thermal = rgb(kelvin, width, height, look);
     match fusion {
         Fusion::Msx { strength } => {
@@ -469,7 +489,7 @@ mod tests {
         let k = vec![290.0; 16];
         let l = look(Distribution::TemperatureLinear);
         // 4×4 thermal over the 8×8 photo; output scaled 2× (max width 8) covers the thermal image.
-        let c = fuse(&k, 4, 4, &l, &photo(), None, Fusion::Msx { strength: 1.0 }, 8);
+        let c = fuse(&k, 4, 4, &l, &photo(), None, Fusion::Msx { strength: 1.0 }, 8, NO_ALIGNMENT);
         assert_eq!((c.width, c.height), (8, 8));
         let lum = |x: usize| c.rgb[(4 * 8 + x) * 3];
         // Flat thermal is mid-grey; the dark side of the edge darkens and the bright side brightens.
@@ -481,10 +501,10 @@ mod tests {
             source: super::super::thermogram::Rect { x: 0, y: 0, w: 4, h: 4 },
             destination: super::super::thermogram::Rect { x: -8, y: 0, w: 16, h: 8 },
         };
-        let c = fuse(&k, 4, 4, &l, &photo(), Some(wide), Fusion::Msx { strength: 1.0 }, 8);
+        let c = fuse(&k, 4, 4, &l, &photo(), Some(wide), Fusion::Msx { strength: 1.0 }, 8, NO_ALIGNMENT);
         assert_eq!(c.rgb[0], 128);
         // Strength 0 is plain thermal.
-        let plain = fuse(&k, 4, 4, &l, &photo(), None, Fusion::Msx { strength: 0.0 }, 8);
+        let plain = fuse(&k, 4, 4, &l, &photo(), None, Fusion::Msx { strength: 0.0 }, 8, NO_ALIGNMENT);
         assert!(plain.rgb.iter().all(|&v| v == 128));
     }
 
@@ -492,7 +512,7 @@ mod tests {
     fn interval_fusion_shows_thermal_only_in_range() {
         let k = vec![285.0, 295.0, 285.0, 295.0];
         let l = look(Distribution::TemperatureLinear);
-        let c = fuse(&k, 2, 2, &l, &photo(), None, Fusion::Interval { lo: 290.0, hi: 300.0 }, 1000);
+        let c = fuse(&k, 2, 2, &l, &photo(), None, Fusion::Interval { lo: 290.0, hi: 300.0 }, 1000, NO_ALIGNMENT);
         // Left column (285 K) shows the photo (black); right column (295 K) shows thermal.
         let at = |x: usize, y: usize| &c.rgb[(y * 8 + x) * 3..(y * 8 + x) * 3 + 3];
         assert_eq!(at(0, 0), &[0, 0, 0]);
@@ -512,6 +532,15 @@ mod tests {
         assert_eq!(src, [0.0, 0.0, 640.0, 480.0]);
         // 1.25 photo pixels per thermal pixel; thermal (160, 120) still lands on (1000, 800).
         assert_eq!(dst, [800.0, 650.0, 800.0, 600.0]);
+    }
+
+    #[test]
+    fn alignment_shifts_and_scales_around_the_centre() {
+        let p = Photo { width: 100, height: 100, rgb: vec![] };
+        let (_, d) = placement_aligned(None, 10, 10, &p, [5.0, -3.0, 1.1]);
+        assert!((d[0] - 0.0).abs() < 1e-4 && (d[1] + 8.0).abs() < 1e-4, "{d:?}");
+        assert!((d[2] - 110.0).abs() < 1e-4 && (d[3] - 110.0).abs() < 1e-4);
+        assert_eq!(placement_aligned(None, 10, 10, &p, NO_ALIGNMENT).1, [0.0, 0.0, 100.0, 100.0]);
     }
 
     #[test]

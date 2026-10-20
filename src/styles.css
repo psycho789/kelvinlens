@@ -1205,3 +1205,17 @@ progress {
   flex: 1;
   color: var(--text) !important;
 }
+
+.align-row button {
+  padding: 3px 7px;
+}
+
+.align-row {
+  flex-wrap: wrap;
+  gap: 3px !important;
+}
+
+.align-row button {
+  padding: 2px 6px;
+  font-size: 12px;
+}

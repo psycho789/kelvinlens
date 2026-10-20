@@ -321,6 +321,7 @@ async fn fuse(
     look: Look,
     fusion: Fusion,
     max_width: usize,
+    align: Option<[f32; 3]>,
     state: State<'_, AppState>,
 ) -> CmdResult<Response> {
     let look = Look { palette: look.palette.normalized(), ..look };
@@ -335,6 +336,7 @@ async fn fuse(
             img.pip(),
             fusion,
             max_width.clamp(64, 4096),
+            align.unwrap_or(render::NO_ALIGNMENT),
         );
         let mut out = Vec::with_capacity(40 + c.rgb.len() / 3 * 4);
         out.extend_from_slice(&(c.width as u32).to_le_bytes());

@@ -33,11 +33,14 @@ pub enum Annotation {
 pub struct Presentation {
     pub rotation: f32,
     pub crop: Option<[f32; 4]>,
+    /// Manual thermal-on-photo alignment `[dx, dy, scale]` (see `render::Alignment`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub align: Option<[f32; 3]>,
 }
 
 impl Presentation {
     pub fn is_identity(&self) -> bool {
-        self.rotation.rem_euclid(360.0) == 0.0 && self.crop.is_none()
+        self.rotation.rem_euclid(360.0) == 0.0 && self.crop.is_none() && self.align.is_none()
     }
 }
 
@@ -132,7 +135,11 @@ mod tests {
             ],
             asset: "Panel B / breaker 3".into(),
             fields: BTreeMap::from([("Load %".to_string(), "80".to_string())]),
-            presentation: Presentation { rotation: 90.0, crop: Some([1.0, 2.0, 30.0, 20.0]) },
+            presentation: Presentation {
+                rotation: 90.0,
+                crop: Some([1.0, 2.0, 30.0, 20.0]),
+                align: Some([2.0, -1.0, 1.02]),
+            },
             ..Default::default()
         };
         save(&image, &edits).unwrap();

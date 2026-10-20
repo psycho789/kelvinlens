@@ -13,6 +13,8 @@ export interface BatchContext {
   /** Re-measure and re-evaluate after measurements or isotherms change. */
   refreshAnalysis(doc: Doc): Promise<void>;
   saveEdits(doc: Doc): Promise<boolean>;
+  /** Writes a video's segment as AVI; returns the frames written. */
+  writeVideo(doc: Doc, path: string): Promise<number>;
   markDirty(doc: Doc): void;
   redraw(): void;
 }
@@ -40,7 +42,7 @@ export async function batchDialog(ctx: BatchContext): Promise<void> {
     formulas: "keep",
     notes: "",
     asset: "",
-    out: { save: true, png: false, jpg: false, csv: false, flir: false, tiff: false, kml: false, table: false },
+    out: { save: true, png: false, jpg: false, csv: false, flir: false, tiff: false, avi: false, kml: false, table: false },
   };
   const sel = (key: keyof typeof opt, options: [string, string][]) =>
     h("select", { onchange: (e: Event) => ((opt as Record<string, unknown>)[key] = (e.target as HTMLSelectElement).value) }, options.map(([v, l]) => h("option", { value: v }, l)));
@@ -81,6 +83,7 @@ export async function batchDialog(ctx: BatchContext): Promise<void> {
           out("csv", `Temperature CSV (${symbol(state.unit)})`),
           out("flir", "Radiometric JPEG copies (FLIR)", "A copy of each FLIR file with the new parameters written in"),
           out("tiff", "Radiometric TIFF"),
+          out("avi", "AVI (videos)", "Each video's segment with palette and measurements"),
           out("kml", "Map (KML)"),
           out("table", "Measurement table (CSV)"),
         ),
@@ -95,7 +98,7 @@ export async function batchDialog(ctx: BatchContext): Promise<void> {
   if (choice !== "run") return;
   const docs = boxes.filter((b) => b.box.checked).map((b) => b.d);
   if (docs.length === 0) return;
-  const needsFolder = opt.out.png || opt.out.jpg || opt.out.csv || opt.out.flir || opt.out.tiff || opt.out.kml || opt.out.table;
+  const needsFolder = Object.entries(opt.out).some(([k, on]) => on && k !== "save");
   let folder: string | null = null;
   if (needsFolder) {
     const picked = await pickers.open({ directory: true, title: "Folder for the outputs" });
@@ -177,6 +180,10 @@ export async function batchDialog(ctx: BatchContext): Promise<void> {
         if (opt.out.tiff) {
           await api.exportThermalTiff(doc.info.id, `${base}-radiometric.tiff`);
           written++;
+        }
+        if (opt.out.avi && doc.video) {
+          p.set(n, docs.length, `${doc.info.name}: rendering video…`);
+          if ((await ctx.writeVideo(doc, `${base}.avi`)) > 0) written++;
         }
       }
     } catch (e) {
