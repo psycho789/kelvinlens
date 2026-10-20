@@ -76,6 +76,9 @@ impl Video {
                 }
             };
             let length = dir.extent();
+            if length > crate::limits::MAX_FRAME_BYTES {
+                return Err(Error::Open("video frame is implausibly large".into()));
+            }
             if length < 64 {
                 break;
             }
@@ -86,6 +89,9 @@ impl Video {
                 read_at(&mut file, at + raw.offset as u64, &mut rh)?;
                 width = u16::from_le_bytes([rh[2], rh[3]]) as usize;
                 height = u16::from_le_bytes([rh[4], rh[5]]) as usize;
+                if crate::limits::pixel_count(width, height).is_none() {
+                    return Err(Error::Open("video frame size is implausible".into()));
+                }
                 compressed = rh[32..34] == [0xFF, 0xD8];
                 frame_rate = fff::camera_extras(&head[..n]).and_then(|x| x.frame_rate);
             }
@@ -295,9 +301,14 @@ fn decode_jpegls(data: &[u8], w: usize, h: usize) -> Result<Vec<u16>> {
 
 /// The frame with JPEG-LS raw data replaced by uncompressed little-endian counts, which flyr reads.
 /// A frame cut short at the end of a file is padded so the decoder can try it.
+/// Frame sizes and block lengths are capped (`limits`), and a frame cut inside a non-raw record is refused.
 fn decompressed(mut block: Vec<u8>) -> Result<Vec<u8>> {
     let dir = fff::directory(&block).ok_or_else(|| Error::Open("unreadable video frame".into()))?;
     let raw = *dir.get(fff::RAW_DATA).ok_or_else(|| Error::Open("video frame without raw data".into()))?;
+    // The decoder slices the other records unchecked, so a frame cut inside one of them is refused.
+    if dir.entries.iter().any(|e| e.kind != fff::RAW_DATA && e.offset.saturating_add(e.length) > block.len()) {
+        return Err(Error::Open("video frame is truncated".into()));
+    }
     let end = (raw.offset + raw.length).min(block.len());
     if raw.offset + 34 > end {
         return Err(Error::Open("video frame is truncated".into()));
@@ -306,11 +317,12 @@ fn decompressed(mut block: Vec<u8>) -> Result<Vec<u8>> {
     let (w, h) =
         (u16::from_le_bytes([header[2], header[3]]) as usize, u16::from_le_bytes([header[4], header[5]]) as usize);
     let data = &block[raw.offset + 32..end];
+    let n = crate::limits::pixel_count(w, h).ok_or_else(|| Error::Open("video frame size is implausible".into()))?;
     let pixels: Vec<u16> = if data.starts_with(&[0xFF, 0xD8]) {
         decode_jpegls(data, w, h)?
-    } else if data.len() >= w * h * 2 {
+    } else if data.len() >= n * 2 {
         // Uncompressed, possibly with trailing bytes: keep exactly one frame of counts.
-        data[..w * h * 2].as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect()
+        data[..n * 2].as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect()
     } else {
         return Err(Error::Open("video frame is truncated".into()));
     };
@@ -496,5 +508,29 @@ mod tests {
         assert_eq!(binned.len(), 8);
         assert_eq!(binned[0], 4.0);
         assert_eq!(binned[2], 25.0);
+    }
+
+    #[test]
+    fn mutated_video_never_panics() {
+        let seeds =
+            vec![[frame([1, 2, 3, 4], 0, false), frame([5, 6, 7, 8], 1, false)].concat(), frame([1, 2, 3, 4], 0, true)];
+        let path = std::env::temp_dir().join(format!("kelvinlens-mutated-{}.seq", std::process::id()));
+        crate::testutil::never_panics("video", &seeds, 600, |b| {
+            std::fs::write(&path, b).unwrap();
+            if let Ok(v) = Video::open(&path) {
+                for i in 0..v.len().min(3) {
+                    let _ = v.frame(i, None);
+                }
+            }
+        });
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn regression_frame_cut_inside_camera_info() {
+        let mut f = frame([1, 2, 3, 4], 0, false);
+        let cut = f.len() - 10;
+        f.truncate(cut);
+        assert!(decompressed(f).is_err());
     }
 }

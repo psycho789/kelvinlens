@@ -55,7 +55,7 @@ pub fn container(jpegs: &[Vec<u8>], width: usize, height: usize, fps: f64) -> Ve
     for v in [0u32, 0, 0, scale, rate, 0, n, largest, u32::MAX, 0] {
         strh.extend_from_slice(&le32(v));
     }
-    for v in [0u16, 0, w as u16, h as u16] {
+    for v in [0u16, 0, u16::try_from(w).unwrap_or(u16::MAX), u16::try_from(h).unwrap_or(u16::MAX)] {
         strh.extend_from_slice(&v.to_le_bytes());
     }
 
@@ -66,7 +66,7 @@ pub fn container(jpegs: &[Vec<u8>], width: usize, height: usize, fps: f64) -> Ve
     strf.extend_from_slice(&1u16.to_le_bytes());
     strf.extend_from_slice(&24u16.to_le_bytes());
     strf.extend_from_slice(b"MJPG");
-    for v in [w * h * 3, 0, 0, 0, 0] {
+    for v in [w.saturating_mul(h).saturating_mul(3), 0, 0, 0, 0] {
         strf.extend_from_slice(&le32(v));
     }
 
@@ -126,5 +126,11 @@ mod tests {
         let scale = u32::from_le_bytes(avi[strh + 20..strh + 24].try_into().unwrap());
         let rate = u32::from_le_bytes(avi[strh + 24..strh + 28].try_into().unwrap());
         assert_eq!(rate / scale, 9);
+    }
+
+    #[test]
+    fn huge_dimensions_do_not_panic() {
+        assert!(container(&[], 70_000, 70_000, 0.0).starts_with(b"RIFF"));
+        assert!(container(&[vec![0xFF, 0xD8, 0xFF, 0xD9]], 1_500_000, 1_500_000, f64::NAN).starts_with(b"RIFF"));
     }
 }

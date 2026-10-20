@@ -6,6 +6,7 @@ import { $, h } from "./dom";
 import { type Doc, type Tool, currentDoc, displayRange, palette, saveSettings, state } from "./state";
 import { panel, viewer } from "./ui";
 import { temp } from "./units";
+import { viewerLabel } from "./a11y";
 
 // ---------------------------------------------------------------------------- readout & status
 
@@ -106,6 +107,7 @@ export function drawThumb(canvas: HTMLCanvasElement, doc: Doc): void {
 }
 
 export const TOOL_HINTS: Partial<Record<Tool, string>> = {
+  spot: "Click to place a spot. With the keyboard: Tab to the image, press Enter, then the arrow keys move it (Shift for 10 pixels).",
   polygon: "Click points; double-click, Enter or click the first point to finish. Backspace removes the last point, Esc cancels.",
   polyline: "Click points; double-click or Enter to finish. Backspace removes the last point, Esc cancels.",
   wand: "Click a pixel: the area grows over connected pixels within the tolerance (Measurements section).",
@@ -119,10 +121,16 @@ export function updateToolbar(): void {
   for (const id of ["save", "batch"]) ($(`#${id}`) as HTMLButtonElement).disabled = !doc;
   ($("#save") as HTMLButtonElement).classList.toggle("attention", !!doc?.dirty);
   document.querySelectorAll<HTMLButtonElement>("button.tool").forEach((b) => {
-    b.classList.toggle("active", b.dataset.tool === state.tool);
+    const active = b.dataset.tool === state.tool;
+    b.classList.toggle("active", active);
+    b.setAttribute("aria-pressed", String(active));
     b.disabled = !doc;
   });
-  document.querySelectorAll<HTMLButtonElement>("[data-unit]").forEach((b) => b.classList.toggle("active", b.dataset.unit === state.unit));
+  document.querySelectorAll<HTMLButtonElement>("[data-unit]").forEach((b) => {
+    const active = b.dataset.unit === state.unit;
+    b.classList.toggle("active", active);
+    b.setAttribute("aria-pressed", String(active));
+  });
   const hint = $("#tool-hint");
   const text = doc ? TOOL_HINTS[state.tool] : undefined;
   hint.hidden = !text;
@@ -140,6 +148,7 @@ export function setUnit(unit: Unit): void {
   saveSettings({ unit });
   updateToolbar();
   const doc = currentDoc();
+  viewer.canvas.setAttribute("aria-label", viewerLabel(doc, unit));
   if (doc?.formulas.length) void refreshAnalysis(doc);
   panel.renderAll(doc);
 }

@@ -1,5 +1,6 @@
 // The image canvas: draws the thermal image (rendered by Rust), the photo, blends and composites,
-// overlays, and handles the tools, zoom, pan, rotation and crop.
+// overlays, and handles the tools, zoom, pan, rotation and crop. The canvas is focusable: it has an
+// accessible name (set by refreshView) and keyboard nudging/spot placement (see events.ts).
 import type { Composite, Pt, Shape, ShapeKind } from "./api";
 import { ACCENT, drawAnnotations, drawFindings, drawMeasurements, handles, type OverlayStyle } from "./overlays";
 import type { Doc, Tool, View } from "./state";
@@ -70,6 +71,10 @@ export class Viewer {
   ) {
     this.canvas = document.createElement("canvas");
     this.canvas.className = "viewer-canvas";
+    this.canvas.setAttribute("role", "img");
+    this.canvas.setAttribute("aria-label", "No image open");
+    this.canvas.setAttribute("aria-keyshortcuts", "Enter ArrowLeft ArrowRight ArrowUp ArrowDown");
+    this.canvas.tabIndex = 0;
     host.append(this.canvas);
     this.ctx = this.canvas.getContext("2d")!;
     new ResizeObserver(() => this.resize()).observe(host);
@@ -746,6 +751,22 @@ export class Viewer {
         break;
       }
     }
+  }
+
+  /** Keyboard alternative to dragging: moves the selected measurement by whole thermal pixels. */
+  nudgeSelected(dx: number, dy: number): void {
+    const doc = this.doc;
+    const m = doc && this.selected !== null ? doc.measurements[this.selected] : undefined;
+    if (!doc || !m) return;
+    m.shape = moved(m.shape, dx, dy, doc.info.width, doc.info.height);
+    this.draw();
+    this.events.measurementsChanged(true);
+  }
+
+  /** Keyboard alternative to clicking with the Spot tool: a spot at the image centre. */
+  placeSpotAtCentre(): void {
+    const doc = this.doc;
+    if (doc) this.addMeasurement({ kind: "spot", x: Math.floor(doc.info.width / 2), y: Math.floor(doc.info.height / 2) });
   }
 
   private addMeasurement(shape: Shape): void {

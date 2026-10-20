@@ -4,6 +4,7 @@ import { $ } from "./dom";
 import { promptAt } from "./modal";
 import { Panel, alarmOn } from "./panel";
 import { panelEvents } from "./panelWiring";
+import { viewerLabel } from "./a11y";
 import { type Doc, currentDoc, displayRange, lookOf, nextLabel, state } from "./state";
 import { markDirty, setTool, showReadout, updateZoomLabel } from "./status";
 import { Viewer } from "./viewer";
@@ -69,6 +70,7 @@ export function panelHandlers() {
 
 export function refreshView(): void {
   const doc = currentDoc();
+  viewer.canvas.setAttribute("aria-label", viewerLabel(doc, state.unit));
   viewer.setDoc(doc, false);
   if (!doc) return;
   viewer.lookKey = lookKey(doc);

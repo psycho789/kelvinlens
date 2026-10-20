@@ -12,7 +12,9 @@ use serde::Serialize;
 use crate::{Error, Result};
 
 /// Largest stitched canvas, in pixels (width × height); larger results are refused.
-const MAX_CANVAS_PIXELS: usize = 40_000_000;
+/// Largest manual offset (pixels) accepted. The canvas limit rejects anything near it anyway.
+const MAX_OFFSET: i64 = 1 << 24;
+const MAX_CANVAS_PIXELS: usize = crate::limits::MAX_PIXELS;
 
 /// Where an in-memory panorama of `first` would be saved: `<dir>/<stem>-panorama.tiff`.
 pub fn output_path(first: &Path) -> PathBuf {
@@ -218,7 +220,8 @@ fn half(k: &[f32], w: usize, h: usize) -> (Vec<f32>, usize, usize) {
 
 /// Stitches `tiles` in order. `offsets` gives fixed positions (top-left, pixels, relative to the
 /// first tile) for tiles the user placed; `None` entries are found automatically from the tile
-/// before. Errors when an automatic tile has no usable overlap with its predecessor.
+/// before. Errors when an automatic tile has no usable overlap with its predecessor, when a manual
+/// offset is beyond 2^24 pixels, or when the canvas would exceed the pixel limit.
 pub fn stitch(tiles: &[Tile], offsets: &[Option<[i64; 2]>]) -> Result<Stitched> {
     if tiles.len() < 2 {
         return Err(Error::Panorama("A panorama needs at least two images".into()));
@@ -228,6 +231,9 @@ pub fn stitch(tiles: &[Tile], offsets: &[Option<[i64; 2]>]) -> Result<Stitched> 
     for i in 1..tiles.len() {
         match offsets.get(i).copied().flatten() {
             Some(o) => {
+                if o.iter().any(|v| !(-MAX_OFFSET..=MAX_OFFSET).contains(v)) {
+                    return Err(Error::Panorama("A manual offset is out of range".into()));
+                }
                 placed.push(o);
                 scores.push(f32::NAN);
             }
@@ -360,5 +366,15 @@ mod tests {
     #[test]
     fn output_path_without_stem_falls_back() {
         assert_eq!(output_path(Path::new("")), PathBuf::from("image-panorama.tiff"));
+    }
+
+    #[test]
+    fn refuses_extreme_manual_offsets() {
+        let flat = vec![290.0f32; 50 * 50];
+        let tiles = [Tile { kelvin: &flat, width: 50, height: 50 }, Tile { kelvin: &flat, width: 50, height: 50 }];
+        for bad in [[i64::MIN, 0], [i64::MAX, 0], [0, i64::MIN], [(1 << 24) + 1, 0]] {
+            let err = stitch(&tiles, &[None, Some(bad)]).unwrap_err().to_string();
+            assert!(err.contains("out of range"), "{bad:?}: {err}");
+        }
     }
 }

@@ -37,7 +37,7 @@ impl Directory {
 
     /// Bytes from the start of the block to the end of its last record.
     pub fn extent(&self) -> usize {
-        self.entries.iter().map(|e| e.offset + e.length).max().unwrap_or(64)
+        self.entries.iter().map(|e| e.offset.saturating_add(e.length)).max().unwrap_or(64)
     }
 }
 
@@ -54,8 +54,8 @@ pub fn directory(b: &[u8]) -> Option<Directory> {
     }
     let mut entries = Vec::new();
     for i in 0..count {
-        let e = dir_at + 32 * i;
-        if e + 32 > b.len() {
+        let e = dir_at.checked_add(i.checked_mul(32)?)?;
+        if e.checked_add(32)? > b.len() {
             return None;
         }
         let kind = u16_at(b, e, le)?;
@@ -248,5 +248,19 @@ mod tests {
     #[test]
     fn rejects_non_flir() {
         assert!(rewrite_jpeg_params(&[0xFF, 0xD8, 0xFF, 0xD9], &Params::default()).is_err());
+    }
+
+    #[test]
+    fn mutated_fff_never_panics() {
+        let seeds = vec![fff_block(), jpeg_with(&fff_block(), 40), jpeg_with(&fff_block(), 4096)];
+        crate::testutil::never_panics("fff", &seeds, 4000, |b| {
+            let _ = directory(b);
+            let _ = camera_extras(b);
+            if let Some((fff, _)) = from_jpeg(b) {
+                let _ = directory(&fff);
+                let _ = camera_extras(&fff);
+            }
+            let _ = rewrite_jpeg_params(b, &Params::default());
+        });
     }
 }

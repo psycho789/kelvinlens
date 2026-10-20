@@ -158,7 +158,11 @@ export function relief(canvas: HTMLCanvasElement, doc: Doc): { draw(yaw: number,
 }
 
 export async function reliefDialog(doc: Doc): Promise<void> {
-  const canvas = h("canvas", { class: "relief-canvas" });
+  const canvas = h("canvas", {
+    class: "relief-canvas",
+    role: "img",
+    "aria-label": `3D relief of ${doc.info.name}: temperature as height. The same values are in the Measurements section; drag to turn, scroll to zoom.`,
+  });
   let yaw = -0.5;
   let pitch = 0.75;
   let zoom = 1;

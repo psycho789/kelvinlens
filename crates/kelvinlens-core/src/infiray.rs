@@ -186,8 +186,12 @@ pub fn decode(bytes: &[u8]) -> Option<InfiRayJpeg> {
     })
 }
 
-/// The saved picture as greyscale.
+/// The saved picture as greyscale; `None` when it cannot be decoded or declares more than `limits::MAX_PIXELS`.
 fn picture_luma(bytes: &[u8]) -> Option<(usize, usize, Vec<f32>)> {
+    let (iw, ih) = image::ImageReader::with_format(std::io::Cursor::new(bytes), image::ImageFormat::Jpeg)
+        .into_dimensions()
+        .ok()?;
+    crate::limits::pixel_count(iw as usize, ih as usize)?;
     let img = image::load_from_memory_with_format(bytes, image::ImageFormat::Jpeg).ok()?.to_luma8();
     let (w, h) = (img.width() as usize, img.height() as usize);
     Some((w, h, img.into_raw().into_iter().map(f32::from).collect()))
@@ -351,5 +355,32 @@ mod tests {
     fn rejects_other_files() {
         assert!(!is_ijpeg(b"not a jpeg"));
         assert!(decode(&[0xff, 0xd8, 0xff, 0xd9]).is_none());
+    }
+
+    #[test]
+    fn mutated_ijpeg_never_panics() {
+        let seeds = vec![
+            ijpeg_with_sizes(0, 16),
+            ijpeg_with_sizes(8, 64),
+            ijpeg_with_sizes(1, 0),
+            ijpeg_with_sizes(0, 4_000_000),
+        ];
+        let run = |b: &[u8]| {
+            let _ = is_ijpeg(b);
+            let _ = decode(b);
+        };
+        crate::testutil::never_panics("infiray", &seeds, 4000, run);
+        // The real sample decodes slowly in a debug build, so it gets fewer iterations.
+        if let Ok(b) = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/P2Pro_a.jpg")) {
+            crate::testutil::never_panics("infiray-p2pro", &[b], 100, run);
+        }
+    }
+
+    #[test]
+    fn oversized_temperature_width_is_refused() {
+        let mut b = ijpeg_with_sizes(0, 2);
+        let at = 6 + HEADER_TEMP_WIDTH_AT;
+        b[at..at + 2].copy_from_slice(&0xFFFFu16.to_le_bytes());
+        assert!(decode(&b).is_none());
     }
 }

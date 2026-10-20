@@ -3,7 +3,8 @@ import { type Unit, api } from "./api";
 import { batchDialog } from "./batch";
 import { openPaths, pickFiles, pickFolder, selectDoc } from "./docs";
 import { $, debounce, errorText, toast } from "./dom";
-import { TOOLS } from "./layout";
+import { nudgeDelta } from "./a11y";
+import { TOOLS, closeMenus } from "./layout";
 import { reloadTemperatures } from "./params";
 import { pickers } from "./pickers";
 import { createReport } from "./reports";
@@ -14,6 +15,14 @@ import { panel, viewer } from "./ui";
 import { seek, togglePlay, writeVideo } from "./video";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+
+/** Keys for the keyboard-focused image canvas; false lets the normal shortcuts run. */
+function canvasKey(e: KeyboardEvent): boolean {
+  const d = nudgeDelta(e.key, e.shiftKey);
+  if (d && state.selected !== null) return viewer.nudgeSelected(d[0], d[1]), true;
+  if (e.key === "Enter" && state.tool === "spot" && currentDoc()) return viewer.placeSpotAtCentre(), true;
+  return false;
+}
 
 export function bindEvents(): void {
   $("#open").onclick = () => void pickFiles();
@@ -44,6 +53,10 @@ export function bindEvents(): void {
     const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
     const mod = e.metaKey || e.ctrlKey;
     if (document.querySelector("dialog[open]")) return;
+    if (e.key === "Escape" && document.querySelector(".menu.open")) {
+      closeMenus();
+      return;
+    }
     if (mod && e.key.toLowerCase() === "o") {
       e.preventDefault();
       void (e.shiftKey ? pickFolder() : pickFiles());
@@ -55,6 +68,8 @@ export function bindEvents(): void {
       void createReport();
     } else if (typing || mod || viewer.isDrawing()) {
       return;
+    } else if (viewer.canvas.matches(":focus-visible") && canvasKey(e)) {
+      e.preventDefault();
     } else if ((e.key === "Delete" || e.key === "Backspace") && state.selected !== null) {
       e.preventDefault();
       deleteMeasurement(state.selected);

@@ -35,16 +35,23 @@ export function icon(path: string): SVGSVGElement {
 
 export type MenuItem = [label: string, action: () => void, enabled?: () => boolean] | "-";
 
+/** Closes every open toolbar menu and resets its button state. */
+export function closeMenus(): void {
+  document.querySelectorAll(".menu.open").forEach((m) => {
+    m.classList.remove("open");
+    m.querySelector(".menu-button")?.setAttribute("aria-expanded", "false");
+  });
+}
+
 /** A toolbar button with a drop-down list of actions. */
 export function menu(id: string, label: string, items: MenuItem[], primary = false): HTMLElement {
-  const list = h("div", { class: "menu-list", role: "menu" });
-  const button = h("button", { id, class: `menu-button ${primary ? "primary" : ""}`, "aria-haspopup": "menu" }, `${label} ▾`);
+  const list = h("div", { class: "menu-list" });
+  const button = h("button", { id, class: `menu-button ${primary ? "primary" : ""}`, "aria-expanded": "false" }, `${label} ▾`);
   const wrap = h("div", { class: "menu" }, button, list);
-  const close = () => wrap.classList.remove("open");
   button.addEventListener("click", (e) => {
     e.stopPropagation();
     const opening = !wrap.classList.contains("open");
-    document.querySelectorAll(".menu.open").forEach((m) => m.classList.remove("open"));
+    closeMenus();
     if (!opening) return;
     list.replaceChildren(
       ...items.map((it) =>
@@ -53,10 +60,9 @@ export function menu(id: string, label: string, items: MenuItem[], primary = fal
           : h(
               "button",
               {
-                role: "menuitem",
                 disabled: it[2] ? !it[2]() : false,
                 onclick: () => {
-                  close();
+                  closeMenus();
                   it[1]();
                 },
               },
@@ -65,6 +71,7 @@ export function menu(id: string, label: string, items: MenuItem[], primary = fal
       ),
     );
     wrap.classList.add("open");
+    button.setAttribute("aria-expanded", "true");
   });
   return wrap;
 }
@@ -72,7 +79,7 @@ export function menu(id: string, label: string, items: MenuItem[], primary = fal
 const hasDoc = () => !!currentDoc();
 
 export function buildLayout(): void {
-document.addEventListener("click", () => document.querySelectorAll(".menu.open").forEach((m) => m.classList.remove("open")));
+  document.addEventListener("click", closeMenus);
   const app = $("#app");
   app.append(
     h(
@@ -89,7 +96,7 @@ document.addEventListener("click", () => document.querySelectorAll(".menu.open")
         "div",
         { class: "group tools", role: "toolbar", "aria-label": "Tools" },
         TOOLS.map(([tool, label, key, path]) =>
-          h("button", { class: "tool", "data-tool": tool, title: `${label} (${key})`, "aria-label": label }, icon(path), h("span", {}, label)),
+          h("button", { class: "tool", "data-tool": tool, "aria-pressed": "false", title: `${label} (${key})`, "aria-label": label }, icon(path), h("span", {}, label)),
         ),
       ),
       h("div", { class: "spacer" }),

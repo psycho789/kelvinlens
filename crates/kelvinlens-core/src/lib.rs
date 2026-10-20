@@ -16,6 +16,7 @@ pub mod formula;
 pub mod geo;
 pub mod infiray;
 mod jpeg;
+mod limits;
 pub mod measure;
 pub mod palette;
 pub mod panorama;
@@ -28,6 +29,9 @@ pub mod thermogram;
 pub mod triage;
 pub mod unit;
 pub mod video;
+
+#[cfg(test)]
+mod testutil;
 mod xml;
 
 pub use error::{Error, Result};
