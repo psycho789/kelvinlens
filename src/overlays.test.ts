@@ -1,4 +1,4 @@
-// Geometry helpers; thermal-on-photo placement is deferred to Sprint 7.
+// Geometry helpers. Thermal-on-photo placement tests live in viewerGeometry.test.ts.
 import { expect, it } from "vitest";
 import { handles, labelPoint } from "./overlays";
 
