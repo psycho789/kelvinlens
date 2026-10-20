@@ -40,6 +40,7 @@ export async function batchDialog(ctx: BatchContext): Promise<void> {
     params: "keep",
     measurements: "keep",
     formulas: "keep",
+    annotations: "keep",
     notes: "",
     asset: "",
     out: { save: true, png: false, jpg: false, csv: false, flir: false, tiff: false, avi: false, kml: false, table: false },
@@ -67,6 +68,7 @@ export async function batchDialog(ctx: BatchContext): Promise<void> {
         field("Parameters", sel("params", [["keep", "Keep"], ["all", "All parameters from current"], ["emissivity", "Emissivity only"], ["distance", "Emissivity and distance"], ["reset", "Reset to each file's"]])),
         field("Measurements", sel("measurements", [["keep", "Keep"], ["replace", "Replace with current's"], ["add", "Add current's"], ["clear", "Clear all"]])),
         field("Formulas", sel("formulas", [["keep", "Keep"], ["copy", "Copy from current"]])),
+        field("Notes and sketches on the image", sel("annotations", [["keep", "Keep"], ["add", "Add current's"], ["clear", "Clear"]])),
         field("Asset tag", h("input", { type: "text", placeholder: "Leave empty to keep", oninput: (e: Event) => (opt.asset = (e.target as HTMLInputElement).value) })),
         field("Add to notes", h("input", { type: "text", placeholder: "Text appended to each image's notes", oninput: (e: Event) => (opt.notes = (e.target as HTMLInputElement).value) })),
       ),
@@ -125,6 +127,7 @@ export async function batchDialog(ctx: BatchContext): Promise<void> {
         if (opt.measurements === "replace") doc.measurements = structuredClone(source.measurements);
         if (opt.measurements === "add") doc.measurements.push(...structuredClone(source.measurements).filter((m) => !doc.measurements.some((x) => x.label === m.label)));
         if (opt.formulas === "copy") doc.formulas = structuredClone(source.formulas);
+        if (opt.annotations === "add") doc.annotations.push(...structuredClone(source.annotations));
       } else {
         // Explicit choices apply to the current image too.
         if (opt.palette.startsWith("id:")) doc.palette = opt.palette.slice(3);
@@ -134,6 +137,7 @@ export async function batchDialog(ctx: BatchContext): Promise<void> {
       if (opt.isotherms === "clear") doc.isotherms = [];
       if (opt.rotation === "clear") doc.presentation = { rotation: 0, crop: null };
       if (opt.measurements === "clear") doc.measurements = [];
+      if (opt.annotations === "clear") doc.annotations = [];
       if (opt.asset.trim()) doc.asset = opt.asset.trim();
       if (opt.notes.trim()) doc.notes = doc.notes ? `${doc.notes}\n${opt.notes.trim()}` : opt.notes.trim();
       // Crop rectangles beyond a smaller image make no sense there.
